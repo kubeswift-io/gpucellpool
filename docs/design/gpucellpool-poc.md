@@ -249,6 +249,37 @@ Notes for the next bake: the local build needs the **distro** QEMU
 (`/usr/bin/qemu-system-x86_64`) — Kata's bundled build has no user-mode networking
 compiled in, which is easy to miss when `/opt/kata/bin` is first in `PATH`.
 
+## 8b. Phase 2 end-to-end (2026-08-07): the operator drives it
+
+The operator itself, chart-installed on dev (`gpucellpool-system`, distroless
+non-root, webhook serving its own cert, leader lease held), took a `GPUCellPool`
+with `replicas: 1` from nothing to usable GPU capacity in a **separate** cluster.
+
+Topology: NAD `cellpoc/cellpoc-net` (bridge + host-local `10.77.0.0/24`, node-local
+on boba) shared by the inner k0s control-plane VM `innercp` (`10.77.0.10`, HAMi
+pre-installed) and the cell. The operator pod joins the same NAD via
+`podAnnotations: k8s.v1.cni.cncf.io/networks` plus a nodeSelector — which is how it
+reaches the inner apiserver with **no TLS shortcut**. Note that
+`kubectl port-forward` cannot reach a KubeSwift nat-exposed VM at all: it dials
+localhost inside the pod netns, while the DNAT maps podIP→VM.
+
+| Observed | Evidence |
+|---|---|
+| cells created | `SwiftGuest cells-0`, `SwiftSeedProfile cells-0-seed`, and the per-cell `Secret cells-0-bootstrap` — the user's template Secret untouched, still holding its 4 unrendered tokens |
+| render is per cell | `hostname: cells-0`, `--node-labels=cells.kubeswift.io/cell=cells-0,…,gpu=on`, `of 1 GPU(s)` |
+| FSM walked both layers | `AllocatingGPU → Booting → Joining → AwaitingGPUCapacity → Ready` |
+| identity fallback works | the operator patched `cells.kubeswift.io/instance=60ec5bcb-…` (the guest UID) plus pool/cell/index onto the Node the kubelet had not labelled |
+| Ready needed all three | the cell sat in `AwaitingGPUCapacity` with "workload Node is Ready but the capacity provider is not usable yet" for as long as HAMi's device plugin was still starting |
+| both capacities, separately | `physicalCapacity {gpus: 1, freeGPUsInCluster: 0, model: NVIDIA GeForce GTX 1080}`; `workloadCapacity {devices: 1, memory 8Gi/0/8Gi, compute 100/0/100, homogeneous, provider HAMi, mode DevicePlugin}` |
+| conditions | all six True (`Progressing=False Idle` in steady state) |
+| capacity is real | two workloads at 3000MiB/30% each landed on the cell, each `nvidia-smi` reporting **3000 MiB**, both bound to the **same** GPU UUID, and the pool moved to `8Gi / 6000Mi allocated / 2192Mi available`, `compute 100/60/40` |
+| and it returns | deleting them returned the pool to `0 allocated / 8Gi available / compute 0` |
+
+Two bugs the run found are recorded in §8a-adjacent commits: `nodeIPFrom` was a
+readiness gate when it should only be an observation (KubeSwift reports a
+secondary NAD interface's MAC but not its IP), and `networkRef` has no `kind`
+field, so the sample as shipped could not have been applied.
+
 ## 9. Exit criteria for Phase 1
 
 All four Step-4 PASS conditions met, on real hardware, with the evidence captured
