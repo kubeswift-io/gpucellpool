@@ -396,30 +396,4 @@ func newUnreadySlice(node, driver, device string) *resourceapi.ResourceSlice {
 	return s
 }
 
-func newAllocatedClaim(ns, name, driver, pool, device string) *resourceapi.ResourceClaim {
-	claim := &resourceapi.ResourceClaim{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec: resourceapi.ResourceClaimSpec{
-			Devices: resourceapi.DeviceClaim{
-				Requests: []resourceapi.DeviceRequest{{
-					Name: "gpu",
-					Exactly: &resourceapi.ExactDeviceRequest{
-						DeviceClassName: "kubeswift-vfio-gpu",
-						AllocationMode:  resourceapi.DeviceAllocationModeExactCount,
-						Count:           1,
-					},
-				}},
-			},
-		},
-	}
-	claim.Status.Allocation = &resourceapi.AllocationResult{
-		Devices: resourceapi.DeviceAllocationResult{
-			Results: []resourceapi.DeviceRequestAllocationResult{
-				{Request: "gpu", Driver: driver, Pool: pool, Device: device},
-			},
-		},
-	}
-	return claim
-}
-
 func ptrTo[T any](v T) *T { return &v }

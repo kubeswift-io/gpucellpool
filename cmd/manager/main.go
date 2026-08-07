@@ -72,7 +72,7 @@ func main() {
 	if err := (&controller.GPUCellPoolReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("gpucellpool"),
+		Recorder: mgr.GetEventRecorder("gpucellpool"),
 		Clients:  workload.NewClientCache(),
 		Clock:    time.Now,
 	}).SetupWithManager(mgr); err != nil {

@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -40,7 +40,7 @@ const (
 type GPUCellPoolReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	Clients  *workload.ClientCache
 
 	// Clock and the two factories are seams for tests.
@@ -409,7 +409,7 @@ func (r *GPUCellPoolReconciler) cellStatus(
 		// we happened to observe, and only on the FIRST time a cell reaches Ready
 		// (a later Ready after a regression is not a startup).
 		if dec.Phase == cellsv1alpha1.CellPhaseReady && prev.Phase != cellsv1alpha1.CellPhaseReady &&
-			outer.CreatedAt != nil && !outer.CreatedAt.IsZero() && prev.ReadyOnce == false {
+			outer.CreatedAt != nil && !outer.CreatedAt.IsZero() && !prev.ReadyOnce {
 			poolmetrics.CellStartupSeconds.WithLabelValues(pool, namespace).
 				Observe(r.now().Sub(outer.CreatedAt.Time).Seconds())
 		}
@@ -785,9 +785,13 @@ func (r *GPUCellPoolReconciler) now() time.Time {
 }
 
 func (r *GPUCellPoolReconciler) event(pool *cellsv1alpha1.GPUCellPool, kind, reason, msg string) {
-	if r.Recorder != nil {
-		r.Recorder.Event(pool, kind, reason, msg)
+	if r.Recorder == nil {
+		return
 	}
+	// The current events API wants an action as well as a reason. Our reasons are
+	// already action-shaped (CellCreating, ScaledUp, DrainTimedOut), so they serve
+	// as both rather than inventing a second vocabulary.
+	r.Recorder.Eventf(pool, nil, kind, reason, reason, "%s", msg)
 }
 
 func (r *GPUCellPoolReconciler) markDraining(cells []cellsv1alpha1.CellStatus, name string) {

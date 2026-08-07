@@ -28,9 +28,14 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRDs and RBAC into config/.
+manifests: controller-gen ## Generate CRDs and RBAC into config/, and sync the chart copy.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." \
 		output:crd:artifacts:config=config/crd/bases
+	# helm upgrade never updates files in crds/, so a stale copy here would install
+	# an old schema on a fresh cluster and silently drop fields. Copying it as part
+	# of generation means it cannot drift; CI's diff then guards a machine step
+	# rather than someone's memory.
+	cp config/crd/bases/*.yaml charts/gpucellpool/crds/
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy methods.

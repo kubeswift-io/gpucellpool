@@ -207,7 +207,7 @@ func AdvanceDrain(
 			Message: "no workloads hold this cell's GPU"}
 	}
 
-	msg := "waiting for workloads to release this cell's GPU"
+	var msg string
 	if allocsKnown {
 		msg = itoa(allocs.Consumers) + " workload(s) still hold this cell's GPU"
 		if allocs.InFlight {

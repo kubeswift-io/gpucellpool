@@ -176,7 +176,8 @@ func TemplateHash(parts ...[]byte) string {
 	h := sha256.New()
 	for _, p := range parts {
 		// Length-prefix each part so ("ab","c") and ("a","bc") differ.
-		fmt.Fprintf(h, "%d:", len(p))
+		// hash.Hash writes never fail, hence the explicit discard.
+		_, _ = fmt.Fprintf(h, "%d:", len(p))
 		h.Write(p)
 	}
 	return hex.EncodeToString(h.Sum(nil))[:10]
