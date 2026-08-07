@@ -218,11 +218,13 @@ func validateAutoscaling(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.E
 		errs = append(errs, field.Invalid(p.Child("minReplicas"), *as.MinReplicas,
 			"must not exceed maxReplicas"))
 	}
-	// Shrinking on a heuristic is the one unrecoverable mistake here, so Auto is a
-	// separate phase rather than a flag that quietly does nothing.
-	if as.ScaleDown == cellsv1alpha1.ScaleDownAuto {
-		errs = append(errs, field.NotSupported(p.Child("scaleDown"),
-			as.ScaleDown, []string{cellsv1alpha1.ScaleDownManual}))
+	// Auto is implemented, but it only ever removes cells the capacity provider
+	// reports as idle — so it is pointless without a floor that leaves the pool
+	// able to serve anything at all.
+	if as.ScaleDown == cellsv1alpha1.ScaleDownAuto && as.MinReplicas == nil {
+		errs = append(errs, field.Required(p.Child("minReplicas"),
+			"required with scaleDown: Auto — without a floor the pool can shrink to zero cells "+
+				"and every later request pays a full cell boot"))
 	}
 	return errs
 }

@@ -124,6 +124,11 @@ func autoscalingEnabled(pool *cellsv1alpha1.GPUCellPool) bool {
 	return pool.Spec.Autoscaling != nil && pool.Spec.Autoscaling.Enabled
 }
 
+// autoScaleDown reports whether the pool may shrink itself.
+func autoScaleDown(pool *cellsv1alpha1.GPUCellPool) bool {
+	return autoscalingEnabled(pool) && pool.Spec.Autoscaling.ScaleDown == cellsv1alpha1.ScaleDownAuto
+}
+
 // liveCells counts cells that exist and are not on their way out — the baseline a
 // scaling decision grows from.
 func liveCells(cells []cellsv1alpha1.CellStatus) int32 {

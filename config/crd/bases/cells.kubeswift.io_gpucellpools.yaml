@@ -93,11 +93,26 @@ spec:
                     type: integer
                   scaleDown:
                     default: Manual
-                    description: ScaleDown is Manual (default) or Auto. Auto is rejected
-                      in v1alpha1.
+                    description: |-
+                      ScaleDown selects who shrinks the pool.
+                        Manual (default): change spec.replicas or minReplicas; the drain path runs.
+                        Auto: the pool removes an IDLE cell when demand is gone.
+
+                      Auto never removes a cell that holds workloads — idleness is read from the
+                      capacity provider, and the drain gate re-checks before deletion. It is
+                      deliberately slower and more conservative than scale-up: a GPU cell costs
+                      minutes to recreate, so thrashing one is worse than holding it a while.
                     enum:
                     - Manual
                     - Auto
+                    type: string
+                  scaleDownStabilizationWindow:
+                    default: 30m
+                    description: |-
+                      ScaleDownStabilizationWindow is how long demand must stay absent, and how
+                      long since the last scale action, before a cell is removed. Longer than the
+                      scale-up window on purpose: removing a cell that is about to be wanted again
+                      costs a full boot, and the whole point of a pool is to have capacity ready.
                     type: string
                   stabilizationWindow:
                     default: 10m
@@ -637,6 +652,13 @@ spec:
                 - pendingRequests
                 - satisfiableByOneCell
                 type: object
+              demandFreeSince:
+                description: |-
+                  DemandFreeSince is when GPU demand last went to zero. Scale-down requires
+                  demand to have been absent for the whole window, not merely absent at this
+                  instant — a pool that shrinks between two bursts is worse than one that waits.
+                format: date-time
+                type: string
               desiredReplicas:
                 description: |-
                   DesiredReplicas is what the scaling policy asked for. It equals
@@ -649,6 +671,10 @@ spec:
               failedCells:
                 format: int32
                 type: integer
+              lastScaleDownTime:
+                description: LastScaleDownTime gates the (longer) scale-down window.
+                format: date-time
+                type: string
               lastScaleUpTime:
                 description: LastScaleUpTime gates the stabilization window.
                 format: date-time

@@ -29,8 +29,15 @@ type ScaleInput struct {
 	// FreeGPUs from the outer inventory; nil means unknown.
 	FreeGPUs *int
 
-	Now         time.Time
-	LastScaleUp *metav1.Time
+	// IdleCells are Ready cells the capacity provider reports as holding nothing.
+	// Only these may be removed: an automatic action must not destroy running work.
+	// Ordered by the caller (emptiest first).
+	IdleCells []string
+
+	Now             time.Time
+	LastScaleUp     *metav1.Time
+	LastScaleDown   *metav1.Time
+	DemandFreeSince *metav1.Time
 }
 
 // ScaleDecision is the outcome.
@@ -40,8 +47,13 @@ type ScaleDecision struct {
 	// ScaledUp is true when this decision GREW the pool, so the caller stamps
 	// LastScaleUpTime and the stabilization window starts.
 	ScaledUp bool
-	Reason   string
-	Message  string
+	// ScaledDown is true when this decision SHRANK the pool.
+	ScaledDown bool
+	// DrainCandidates is the preferred removal order when shrinking — idle cells
+	// only. Empty means "the caller picks", which is highest-index-first.
+	DrainCandidates []string
+	Reason          string
+	Message         string
 }
 
 // DecideScale computes the desired cell count.
@@ -97,7 +109,9 @@ func DecideScale(in ScaleInput) ScaleDecision {
 				" GPU request(s) are pending but none fits one cell of this pool's shape; not scaling"}
 
 	case in.Demand.SatisfiableByOneCell == 0:
-		return ScaleDecision{Desired: base, Reason: cellsv1alpha1.ReasonIdle}
+		// No demand this pool can answer. That is the only situation in which
+		// shrinking is even considered.
+		return decideScaleDown(in, as, base, floor)
 
 	case base >= ceiling:
 		return ScaleDecision{Desired: ceiling, Reason: cellsv1alpha1.ReasonAtMaxReplicas,
@@ -119,6 +133,64 @@ func DecideScale(in ScaleInput) ScaleDecision {
 			Message: "scaling up by one for " + itoa(in.Demand.SatisfiableByOneCell) +
 				" satisfiable GPU request(s)"}
 	}
+}
+
+// decideScaleDown is only reached with demand at zero. Everything here is a reason
+// NOT to shrink, because the failure mode is asymmetric: holding an idle GPU costs
+// money, removing a wanted one costs a full boot AND the work that was about to run
+// on it.
+func decideScaleDown(in ScaleInput, as *cellsv1alpha1.AutoscalingSpec, base, floor int32) ScaleDecision {
+	hold := func(reason, msg string) ScaleDecision {
+		return ScaleDecision{Desired: base, Reason: reason, Message: msg}
+	}
+
+	if as.ScaleDown != cellsv1alpha1.ScaleDownAuto {
+		return hold(cellsv1alpha1.ReasonIdle, "")
+	}
+	if base <= floor {
+		return hold(cellsv1alpha1.ReasonAtMinReplicas, "")
+	}
+	if len(in.IdleCells) == 0 {
+		// Every cell is holding work. This is the common case in a busy pool and
+		// not a fault.
+		return hold(cellsv1alpha1.ReasonNoIdleCell,
+			"demand is absent but every cell still holds workloads")
+	}
+
+	window := scaleDownWindow(as)
+
+	// Demand must have been absent for the WHOLE window, not merely absent right
+	// now: a pool that shrinks between two bursts is worse than one that waits.
+	if in.DemandFreeSince == nil || in.DemandFreeSince.IsZero() ||
+		in.Now.Sub(in.DemandFreeSince.Time) < window {
+		return hold(cellsv1alpha1.ReasonStabilizing,
+			"waiting for demand to stay absent for "+window.String()+" before removing a cell")
+	}
+	// And not immediately after any scale action, in either direction.
+	if within(in.LastScaleDown, in.Now, window) || within(in.LastScaleUp, in.Now, window) {
+		return hold(cellsv1alpha1.ReasonStabilizing,
+			"waiting out the scale-down window after the last scaling action")
+	}
+
+	return ScaleDecision{
+		Desired:         base - 1,
+		ScaledDown:      true,
+		DrainCandidates: in.IdleCells,
+		Reason:          cellsv1alpha1.ReasonScaledDown,
+		Message: "removing one idle cell after " + window.String() +
+			" with no GPU demand (" + itoa(len(in.IdleCells)) + " idle)",
+	}
+}
+
+func scaleDownWindow(as *cellsv1alpha1.AutoscalingSpec) time.Duration {
+	if as.ScaleDownStabilizationWindow != nil && as.ScaleDownStabilizationWindow.Duration > 0 {
+		return as.ScaleDownStabilizationWindow.Duration
+	}
+	return 30 * time.Minute
+}
+
+func within(t *metav1.Time, now time.Time, window time.Duration) bool {
+	return t != nil && !t.IsZero() && now.Sub(t.Time) < window
 }
 
 func stabilizing(as *cellsv1alpha1.AutoscalingSpec, last *metav1.Time, now time.Time) bool {

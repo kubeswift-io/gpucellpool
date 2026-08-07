@@ -39,6 +39,22 @@ All notable changes to this project are documented here. The format follows
   reached. `status.demand`, `status.desiredReplicas`, `status.lastScaleUpTime` and
   the `ScalingActive` condition report every decision and its reason.
 
+### Added — automatic scale-down (Phase 4)
+
+- `spec.autoscaling.scaleDown: Auto` now works, gated on `minReplicas` being set:
+  without a floor the pool could shrink to zero and every later request would pay a
+  full cell boot.
+- Only cells the capacity provider reports as **idle** are removable, and a cell
+  whose allocations cannot be read is never treated as idle — "empty" and "unknown"
+  are different answers, and only the first may lead to a deletion.
+- Demand must have been absent for the whole `scaleDownStabilizationWindow`
+  (default 30m, deliberately longer than scale-up), tracked by
+  `status.demandFreeSince`. Absent *right now* is not the same thing: a pool that
+  shrinks between two bursts is worse than one that waits.
+- Membership removes the autoscaler's named idle cells rather than the highest
+  index; highest-index-first remains the rule for an operator-driven shrink, where
+  the intent is "make it smaller" rather than "remove that one".
+
 ### Added — metrics
 
 - `gpucell_*` Prometheus metrics, with the two layers deliberately kept apart:

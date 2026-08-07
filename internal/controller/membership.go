@@ -63,6 +63,12 @@ type MembershipInput struct {
 	// EverReady is true once any cell has reached Ready. It distinguishes "a
 	// burst of failures" from "this pool has never worked".
 	EverReady bool
+
+	// DrainPreference is an ordered list of cell names to remove first when
+	// shrinking. The autoscaler sets it to IDLE cells only; empty falls back to
+	// highest-index-first, which is right for an operator-driven scale-down where
+	// the intent is "make the pool smaller" rather than "remove that one".
+	DrainPreference []string
 }
 
 // MembershipPlan is what the reconciler should do about the cell set.
@@ -130,18 +136,42 @@ func PlanMembership(in MembershipInput) MembershipPlan {
 			plan.Message = "not scaling down while the workload cluster is unreachable"
 			return plan
 		}
+		removable := map[string]bool{}
 		var candidates []int32
 		for _, c := range in.Cells {
 			switch c.Phase {
 			case cellsv1alpha1.CellPhaseDraining, cellsv1alpha1.CellPhaseDeleting, cellsv1alpha1.CellPhaseFailed:
 			default:
 				candidates = append(candidates, c.Index)
+				removable[c.Name] = true
 			}
 		}
-		for _, idx := range cellid.HighestIndexes(candidates, int(live-in.Desired)) {
-			for _, c := range in.Cells {
-				if c.Index == idx {
-					plan.Drain = append(plan.Drain, c.Name)
+		want := int(live - in.Desired)
+
+		// Honour the autoscaler's preference first: it lists only cells the
+		// capacity provider reports as idle, and removing a busy cell instead
+		// would destroy running work.
+		for _, name := range in.DrainPreference {
+			if want <= 0 {
+				break
+			}
+			if removable[name] {
+				plan.Drain = append(plan.Drain, name)
+				removable[name] = false
+				want--
+			}
+		}
+		if want > 0 {
+			for _, idx := range cellid.HighestIndexes(candidates, len(candidates)) {
+				if want <= 0 {
+					break
+				}
+				for _, c := range in.Cells {
+					if c.Index == idx && removable[c.Name] {
+						plan.Drain = append(plan.Drain, c.Name)
+						removable[c.Name] = false
+						want--
+					}
 				}
 			}
 		}

@@ -91,11 +91,26 @@ type AutoscalingSpec struct {
 	// +optional
 	StabilizationWindow *metav1.Duration `json:"stabilizationWindow,omitempty"`
 
-	// ScaleDown is Manual (default) or Auto. Auto is rejected in v1alpha1.
+	// ScaleDown selects who shrinks the pool.
+	//   Manual (default): change spec.replicas or minReplicas; the drain path runs.
+	//   Auto: the pool removes an IDLE cell when demand is gone.
+	//
+	// Auto never removes a cell that holds workloads — idleness is read from the
+	// capacity provider, and the drain gate re-checks before deletion. It is
+	// deliberately slower and more conservative than scale-up: a GPU cell costs
+	// minutes to recreate, so thrashing one is worse than holding it a while.
 	// +kubebuilder:validation:Enum=Manual;Auto
 	// +kubebuilder:default=Manual
 	// +optional
 	ScaleDown string `json:"scaleDown,omitempty"`
+
+	// ScaleDownStabilizationWindow is how long demand must stay absent, and how
+	// long since the last scale action, before a cell is removed. Longer than the
+	// scale-up window on purpose: removing a cell that is about to be wanted again
+	// costs a full boot, and the whole point of a pool is to have capacity ready.
+	// +kubebuilder:default="30m"
+	// +optional
+	ScaleDownStabilizationWindow *metav1.Duration `json:"scaleDownStabilizationWindow,omitempty"`
 }
 
 // CellSpec is the shape of a single cell.
@@ -595,6 +610,16 @@ type GPUCellPoolStatus struct {
 	// LastScaleUpTime gates the stabilization window.
 	// +optional
 	LastScaleUpTime *metav1.Time `json:"lastScaleUpTime,omitempty"`
+
+	// LastScaleDownTime gates the (longer) scale-down window.
+	// +optional
+	LastScaleDownTime *metav1.Time `json:"lastScaleDownTime,omitempty"`
+
+	// DemandFreeSince is when GPU demand last went to zero. Scale-down requires
+	// demand to have been absent for the whole window, not merely absent at this
+	// instant — a pool that shrinks between two bursts is worse than one that waits.
+	// +optional
+	DemandFreeSince *metav1.Time `json:"demandFreeSince,omitempty"`
 
 	// PhysicalCapacity is outer capacity (whole GPUs).
 	// +optional

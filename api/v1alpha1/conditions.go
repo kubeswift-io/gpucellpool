@@ -80,6 +80,9 @@ const (
 	ReasonStabilizing         = "Stabilizing"
 	ReasonAtMaxReplicas       = "AtMaxReplicas"
 	ReasonDemandUnsatisfiable = "DemandUnsatisfiable"
+	ReasonScaledDown          = "ScaledDown"
+	ReasonAtMinReplicas       = "AtMinReplicas"
+	ReasonNoIdleCell          = "NoIdleCell"
 )
 
 // Labels the operator stamps on the objects it owns, in both clusters. They are

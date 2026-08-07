@@ -143,23 +143,50 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	poolmetrics.WorkloadClusterReachable.WithLabelValues(pool.Name, pool.Namespace).
 		Set(boolGauge(reachable))
 
+	// Idleness is read from the capacity provider, not guessed: only a cell that
+	// holds nothing may be removed automatically.
+	var idle []string
+	if autoScaleDown(&pool) && reachable && provider != nil {
+		idle = r.idleCells(ctx, provider, cells)
+	}
+
 	scale := DecideScale(ScaleInput{
-		Replicas:    pool.Spec.Replicas,
-		Autoscaling: pool.Spec.Autoscaling,
-		LiveCells:   liveCells(cells),
-		Demand:      demand,
-		DemandKnown: demandKnown,
-		FreeGPUs:    freeGPUs,
-		Now:         r.now(),
-		LastScaleUp: pool.Status.LastScaleUpTime,
+		Replicas:        pool.Spec.Replicas,
+		Autoscaling:     pool.Spec.Autoscaling,
+		LiveCells:       liveCells(cells),
+		Demand:          demand,
+		DemandKnown:     demandKnown,
+		FreeGPUs:        freeGPUs,
+		IdleCells:       idle,
+		Now:             r.now(),
+		LastScaleUp:     pool.Status.LastScaleUpTime,
+		LastScaleDown:   pool.Status.LastScaleDownTime,
+		DemandFreeSince: pool.Status.DemandFreeSince,
 	})
 	if autoscalingEnabled(&pool) {
 		poolmetrics.ScaleDecisionsTotal.WithLabelValues(
 			pool.Name, pool.Namespace, scale.Reason, strconv.FormatBool(scale.ScaledUp)).Inc()
 	}
+	// DemandFreeSince is what makes "demand has been absent for the whole window"
+	// answerable; demand being absent right now is not the same thing.
+	if demandKnown {
+		if demand.SatisfiableByOneCell == 0 && demand.PendingRequests == 0 {
+			if pool.Status.DemandFreeSince == nil {
+				t := metav1.NewTime(r.now())
+				pool.Status.DemandFreeSince = &t
+			}
+		} else {
+			pool.Status.DemandFreeSince = nil
+		}
+	}
 	if scale.ScaledUp {
 		nowT := metav1.NewTime(r.now())
 		pool.Status.LastScaleUpTime = &nowT
+		r.event(&pool, corev1.EventTypeNormal, scale.Reason, scale.Message)
+	}
+	if scale.ScaledDown {
+		nowT := metav1.NewTime(r.now())
+		pool.Status.LastScaleDownTime = &nowT
 		r.event(&pool, corev1.EventTypeNormal, scale.Reason, scale.Message)
 	}
 
@@ -171,6 +198,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		FreeGPUs:          freeGPUs,
 		WorkloadReachable: reachable,
 		EverReady:         everReady(&pool, cells),
+		DrainPreference:   scale.DrainCandidates,
 	})
 
 	for _, idx := range plan.Create {
