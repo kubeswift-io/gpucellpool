@@ -275,7 +275,37 @@ localhost inside the pod netns, while the DNAT maps podIP→VM.
 | capacity is real | two workloads at 3000MiB/30% each landed on the cell, each `nvidia-smi` reporting **3000 MiB**, both bound to the **same** GPU UUID, and the pool moved to `8Gi / 6000Mi allocated / 2192Mi available`, `compute 100/60/40` |
 | and it returns | deleting them returned the pool to `0 allocated / 8Gi available / compute 0` |
 
-Two bugs the run found are recorded in §8a-adjacent commits: `nodeIPFrom` was a
+### The baked image, booted under Cloud Hypervisor (same day)
+
+The QEMU-baked image (`hack/build-cell-image.sh`, published as an OCI artifact and
+imported via `SwiftImage.spec.source.oci`) **boots and runs correctly under Cloud
+Hypervisor**, with thin enrollment: no apt, no driver build, no reboot. Evidence
+from the cell: `cloud-hypervisor` in the console, both addresses up
+(`10.77.0.16` on the NAD and a nat primary), sshd answering, `nvidia-smi` reporting
+`1 of 1 GPU(s)` off the baked 580.173.02 driver, a CDI spec generated at first boot,
+and the pool reaching `Ready` with HAMi advertising 8Gi.
+
+So "build the image on the same VMM that runs it" was a theoretical concern. The
+in-cluster CH rebake pipeline is **not needed**, which is why it was worth testing
+the cheap hypothesis first rather than building the pipeline speculatively.
+
+It cost two cell rebuilds to get there, for a reason worth remembering: the bake
+script and the install-at-boot template had **drifted** on the containerd config
+schema. The template used containerd 2.x's v3 form; the bake used the v1 CRI form,
+which k0s ≥ 1.34 rejects at pre-flight, so the worker never started. The divergence
+only surfaced when both were actually run — and the failure was silent from every
+angle that looked healthy (VM up, sshd answering, addresses assigned, cloud-init
+successful, join log ending `EXIT=0`, because the join *script* finished and it was
+the *service* that refused to start). Only `journalctl -u k0sworker` inside the
+guest showed it.
+
+Timing, with the caveat that it is NOT a clean measurement — the drop-in was patched
+by hand mid-boot: ~8.5 minutes pool-scale to Ready, of which ~4–5 minutes was the
+root-disk clone (30 GiB image, 8.5 GiB of real data) and thin enrollment itself took
+seconds. Against ~14 minutes for install-at-boot. A clean number needs a rebake with
+the fixed script.
+
+Two bugs the earlier run found are recorded in §8a-adjacent commits: `nodeIPFrom` was a
 readiness gate when it should only be an observation (KubeSwift reports a
 secondary NAD interface's MAC but not its IP), and `networkRef` has no `kind`
 field, so the sample as shipped could not have been applied.
