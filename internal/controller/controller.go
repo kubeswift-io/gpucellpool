@@ -1,0 +1,611 @@
+package controller
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+	"github.com/kubeswift-io/gpucellpool/internal/capacity"
+	"github.com/kubeswift-io/gpucellpool/internal/cellid"
+	"github.com/kubeswift-io/gpucellpool/internal/inventory"
+	"github.com/kubeswift-io/gpucellpool/internal/provisioner"
+	"github.com/kubeswift-io/gpucellpool/internal/workload"
+)
+
+const (
+	requeueProgressing = 30 * time.Second
+	requeueSteady      = 2 * time.Minute
+)
+
+// GPUCellPoolReconciler reconciles GPUCellPool objects across two clusters: it
+// owns cells in the infrastructure cluster and observes their Nodes and GPU
+// capacity in the workload cluster.
+type GPUCellPoolReconciler struct {
+	client.Client
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+	Clients  *workload.ClientCache
+
+	// Clock and the two factories are seams for tests.
+	Clock          func() time.Time
+	NewProvisioner func(client.Client) provisioner.Provisioner
+	NewProvider    func(kubernetes.Interface, string) capacity.Provider
+}
+
+// +kubebuilder:rbac:groups=cells.kubeswift.io,resources=gpucellpools,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cells.kubeswift.io,resources=gpucellpools/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cells.kubeswift.io,resources=gpucellpools/finalizers,verbs=update
+// +kubebuilder:rbac:groups=swift.kubeswift.io,resources=swiftguests,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=seed.kubeswift.io,resources=swiftseedprofiles,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices;resourceclaims;resourceclaimtemplates;deviceclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+
+// Reconcile implements the loop in docs/design/gpucellpool-reconciliation.md §4.
+func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	var pool cellsv1alpha1.GPUCellPool
+	if err := r.Get(ctx, req.NamespacedName, &pool); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	prov := r.provisioner()
+
+	if !pool.DeletionTimestamp.IsZero() {
+		return r.reconcileDeletion(ctx, &pool, prov)
+	}
+
+	if controllerutil.AddFinalizer(&pool, cellsv1alpha1.FinalizerPool) {
+		if err := r.Update(ctx, &pool); err != nil {
+			return ctrl.Result{}, fmt.Errorf("adding pool finalizer: %w", err)
+		}
+	}
+
+	// Step 3: the workload cluster. A failure here is first-class state, not an
+	// error return: it freezes every destructive path below.
+	inner, reachable, reachReason, reachMsg := r.workloadClient(ctx, &pool)
+
+	var provider capacity.Provider
+	if reachable {
+		provider = r.provider(inner, hamiMode(&pool))
+	}
+
+	// Step 4: rediscover cells from live objects. status.cells is a projection,
+	// so a restart loses nothing.
+	cells, err := r.discoverCells(ctx, &pool, prov, inner, provider, reachable)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Step 10 (partly): the outer inventory, which also gates creation below.
+	var freeGPUs *int
+	if counts, invErr := inventory.FreeGPUs(ctx, r.Client, ""); invErr != nil {
+		log.V(1).Info("physical inventory unreadable; treating free GPUs as unknown", "err", invErr.Error())
+	} else {
+		freeGPUs = &counts.Free
+	}
+
+	// Steps 5-6: membership.
+	plan := PlanMembership(MembershipInput{
+		Desired:           pool.Spec.Replicas,
+		Cells:             cells,
+		Now:               r.now(),
+		FreeGPUs:          freeGPUs,
+		WorkloadReachable: reachable,
+		EverReady:         everReady(&pool, cells),
+	})
+
+	for _, idx := range plan.Create {
+		if err := r.createCell(ctx, &pool, prov, idx); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.event(&pool, corev1.EventTypeNormal, cellsv1alpha1.ReasonCellCreating,
+			fmt.Sprintf("creating cell %s", cellid.Name(pool.Name, idx)))
+	}
+	for _, name := range plan.Drain {
+		r.markDraining(cells, name)
+		r.event(&pool, corev1.EventTypeNormal, cellsv1alpha1.ReasonCellDraining,
+			fmt.Sprintf("draining cell %s", name))
+	}
+
+	// Replace failed cells whose backoff has expired: delete the guest and let
+	// the next pass recreate the index.
+	for i := range cells {
+		if ShouldReplace(cells[i], r.now()) {
+			if err := r.deleteCell(ctx, &pool, prov, cells[i], false); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	// Draining cells: gate on allocations, then remove.
+	for i := range cells {
+		if cells[i].Phase != cellsv1alpha1.CellPhaseDraining {
+			continue
+		}
+		if err := r.progressDrain(ctx, &pool, prov, provider, inner, &cells[i], false); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Steps 9-10: capacity.
+	var (
+		cap0          capacity.Capacity
+		capacityKnown bool
+		health        capacity.Health
+	)
+	if reachable && provider != nil {
+		nodes := readyNodeNames(cells)
+		if h, hErr := provider.Health(ctx, nodes); hErr != nil {
+			health = capacity.Health{Reason: cellsv1alpha1.ReasonHAMiNotDetected, Message: hErr.Error()}
+		} else {
+			health = h
+		}
+		if c, cErr := provider.Capacity(ctx, nodes); cErr != nil {
+			log.V(1).Info("capacity unreadable; retaining the last known values", "err", cErr.Error())
+		} else {
+			cap0, capacityKnown = c, true
+		}
+	}
+
+	r.writeStatus(ctx, &pool, cells, plan, freeGPUs, health, cap0, capacityKnown, reachable, reachReason, reachMsg)
+	if err := r.Status().Update(ctx, &pool); err != nil {
+		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
+	}
+
+	requeue := requeueSteady
+	if _, _, creating, draining, _ := CountCells(cells); creating > 0 || draining > 0 || len(plan.Create) > 0 {
+		requeue = requeueProgressing
+	}
+	if plan.RequeueAfter > 0 && plan.RequeueAfter < requeue {
+		requeue = plan.RequeueAfter
+	}
+	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// discoverCells rebuilds per-cell state from live objects in both clusters.
+func (r *GPUCellPoolReconciler) discoverCells(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner,
+	inner kubernetes.Interface, provider capacity.Provider, reachable bool,
+) ([]cellsv1alpha1.CellStatus, error) {
+	previous := map[string]cellsv1alpha1.CellStatus{}
+	for _, c := range pool.Status.Cells {
+		previous[c.Name] = c
+	}
+
+	guests, err := r.listCellGuests(ctx, pool)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]cellsv1alpha1.CellStatus, 0, len(guests))
+	for _, name := range guests {
+		idx, err := cellid.ParseIndex(pool.Name, name)
+		if err != nil {
+			continue // not one of ours despite the label
+		}
+		prev := previous[name]
+
+		outer, err := prov.Ensure(ctx, r.cellRequest(pool, idx))
+		if err != nil {
+			return nil, fmt.Errorf("observing cell %s: %w", name, err)
+		}
+
+		obs := Observation{
+			Current:           phaseOr(prev.Phase, cellsv1alpha1.CellPhasePending),
+			LastTransition:    transitionOr(prev.LastTransitionTime, r.now()),
+			Now:               r.now(),
+			Outer:             outer,
+			WorkloadReachable: reachable,
+			ExpectedDevices:   expectedDevices(pool),
+			BootstrapTimeout:  durationOr(pool.Spec.Bootstrap.ReadyTimeout, 15*time.Minute),
+			CapacityTimeout:   durationOr(pool.Spec.Capacity.ReadyTimeout, 5*time.Minute),
+		}
+
+		if reachable {
+			node, nErr := workload.GetNodeState(ctx, inner, name)
+			if nErr != nil {
+				return nil, fmt.Errorf("cell %s: %w", name, nErr)
+			}
+			obs.Node = node
+			obs.StaleNode = node.Exists && cellid.IsStaleNode(node.Labels, outer.UID)
+
+			if node.Exists && !obs.StaleNode {
+				// The kubelet may not have applied the identity labels itself;
+				// patching them here is the reliable path.
+				if _, mErr := workload.EnsureNodeMetadata(ctx, inner, name,
+					cellid.NodeLabels(pool.Name, idx, outer.UID, nodeLabels(pool)),
+					nodeAnnotations(pool), nodeTaints(pool)); mErr != nil {
+					return nil, fmt.Errorf("cell %s node metadata: %w", name, mErr)
+				}
+			}
+			if provider != nil && node.Exists && node.Ready {
+				if h, hErr := provider.Health(ctx, []string{name}); hErr == nil {
+					obs.ProviderReady = h.Ready
+				}
+				if d, dErr := provider.Devices(ctx, name); dErr == nil {
+					obs.CapacityDevices = d
+				}
+			}
+		}
+
+		// A draining cell keeps its phase; teardown owns it.
+		if prev.Phase == cellsv1alpha1.CellPhaseDraining || prev.Phase == cellsv1alpha1.CellPhaseDeleting {
+			obs.Current = prev.Phase
+		}
+
+		dec := AdvanceCell(obs)
+		if dec.ReapStaleNode && reachable {
+			if err := workload.DeleteNode(ctx, inner, name); err != nil {
+				return nil, fmt.Errorf("reaping stale node for %s: %w", name, err)
+			}
+			r.event(pool, corev1.EventTypeWarning, cellsv1alpha1.ReasonNodeNameCollision,
+				fmt.Sprintf("removed a workload Node left by a previous incarnation of cell %s", name))
+		}
+
+		out = append(out, r.cellStatus(prev, name, idx, outer, obs, dec))
+	}
+	return out, nil
+}
+
+// cellStatus folds a decision into the cell's status row, carrying the failure
+// count and transition time forward.
+func (r *GPUCellPoolReconciler) cellStatus(
+	prev cellsv1alpha1.CellStatus, name string, idx int32,
+	outer provisioner.OuterState, obs Observation, dec Decision,
+) cellsv1alpha1.CellStatus {
+	c := cellsv1alpha1.CellStatus{
+		Name:               name,
+		Index:              idx,
+		Phase:              dec.Phase,
+		Message:            dec.Message,
+		GuestUID:           outer.UID,
+		HostNode:           outer.HostNode,
+		Devices:            outer.GPUDevices,
+		NodeReady:          obs.Node.Ready,
+		CapacityDevices:    int32(obs.CapacityDevices),
+		FailureCount:       prev.FailureCount,
+		LastTransitionTime: prev.LastTransitionTime,
+	}
+	if obs.Node.Exists {
+		c.NodeName = name
+	}
+	if prev.Phase != dec.Phase || c.LastTransitionTime == nil {
+		nowT := metav1.NewTime(r.now())
+		c.LastTransitionTime = &nowT
+		if dec.Phase == cellsv1alpha1.CellPhaseFailed && prev.Phase != cellsv1alpha1.CellPhaseFailed {
+			c.FailureCount = prev.FailureCount + 1
+		}
+	}
+	return c
+}
+
+func (r *GPUCellPoolReconciler) createCell(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner, idx int32,
+) error {
+	if err := cellid.ValidatePool(pool.Name); err != nil {
+		return err
+	}
+	_, err := prov.Ensure(ctx, r.cellRequest(pool, idx))
+	return err
+}
+
+// progressDrain cordons a draining cell, waits for its GPU to be released, then
+// removes it. poolDeleting relaxes the wait to a bounded one (see AdvanceDrain).
+func (r *GPUCellPoolReconciler) progressDrain(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner,
+	provider capacity.Provider, inner kubernetes.Interface,
+	cell *cellsv1alpha1.CellStatus, poolDeleting bool,
+) error {
+	var (
+		allocs      capacity.Allocations
+		allocsKnown bool
+	)
+	if inner != nil && provider != nil {
+		// Cordon BEFORE counting: counting first races the scheduler placing one
+		// more pod.
+		if err := workload.Cordon(ctx, inner, cell.Name); err != nil {
+			return err
+		}
+		if a, err := provider.Allocations(ctx, cell.Name); err == nil {
+			allocs, allocsKnown = a, true
+		}
+	}
+
+	dec := AdvanceDrain(allocs, allocsKnown, poolDeleting,
+		deletionPolicy(pool) == cellsv1alpha1.DeletionPolicyForce,
+		transitionOr(cell.LastTransitionTime, r.now()), r.now(), drainTimeout(pool))
+
+	cell.Message = dec.Message
+	if !dec.Proceed {
+		return nil
+	}
+	return r.deleteCell(ctx, pool, prov, *cell, true)
+}
+
+// deleteCell removes a cell: workload Node first (so the kubelet cannot
+// re-register a Node we have stopped tracking), then the drain finalizer, then
+// the outer objects.
+func (r *GPUCellPoolReconciler) deleteCell(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner,
+	cell cellsv1alpha1.CellStatus, reapNode bool,
+) error {
+	idx := cell.Index
+	req := r.cellRequest(pool, idx)
+
+	if reapNode {
+		if inner, ok, _, _ := r.workloadClient(ctx, pool); ok {
+			if err := workload.DeleteNode(ctx, inner, cell.Name); err != nil {
+				return err
+			}
+		}
+	}
+	if sg, ok := prov.(*provisioner.SwiftGuestProvisioner); ok {
+		if err := sg.ClearDrainFinalizer(ctx, req); err != nil {
+			return err
+		}
+	}
+	if _, err := prov.Delete(ctx, req); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *GPUCellPoolReconciler) reconcileDeletion(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner,
+) (ctrl.Result, error) {
+	inner, reachable, _, _ := r.workloadClient(ctx, pool)
+	var provider capacity.Provider
+	if reachable {
+		provider = r.provider(inner, hamiMode(pool))
+	}
+
+	guests, err := r.listCellGuests(ctx, pool)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(guests) > 0 {
+		for _, name := range guests {
+			idx, err := cellid.ParseIndex(pool.Name, name)
+			if err != nil {
+				continue
+			}
+			cell := cellsv1alpha1.CellStatus{Name: name, Index: idx, Phase: cellsv1alpha1.CellPhaseDraining}
+			for _, c := range pool.Status.Cells {
+				if c.Name == name {
+					cell = c
+				}
+			}
+			if err := r.progressDrain(ctx, pool, prov, provider, inner, &cell, true); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{RequeueAfter: requeueProgressing}, nil
+	}
+
+	if controllerutil.RemoveFinalizer(pool, cellsv1alpha1.FinalizerPool) {
+		if err := r.Update(ctx, pool); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing pool finalizer: %w", err)
+		}
+	}
+	r.Clients.Forget(clientKey(pool))
+	return ctrl.Result{}, nil
+}
+
+func (r *GPUCellPoolReconciler) writeStatus(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool,
+	cells []cellsv1alpha1.CellStatus, plan MembershipPlan, freeGPUs *int,
+	health capacity.Health, cap0 capacity.Capacity, capacityKnown bool,
+	reachable bool, reachReason, reachMsg string,
+) {
+	total, ready, creating, draining, failed := CountCells(cells)
+
+	pool.Status.ObservedGeneration = pool.Generation
+	pool.Status.Replicas = total
+	pool.Status.ReadyCells = ready
+	pool.Status.CreatingCells = creating
+	pool.Status.DrainingCells = draining
+	pool.Status.FailedCells = failed
+	pool.Status.Cells = cells
+
+	held := 0
+	for _, c := range cells {
+		held += len(c.Devices)
+	}
+	phys := &cellsv1alpha1.PhysicalCapacityStatus{GPUs: int32(held)}
+	if freeGPUs != nil {
+		f := int32(*freeGPUs)
+		phys.FreeGPUsInCluster = &f
+	}
+	if len(cap0.ByModel) > 0 {
+		phys.Model = cap0.ByModel[0].Model
+	}
+	pool.Status.PhysicalCapacity = phys
+
+	// Stale-but-honest beats fresh-but-wrong: an unreadable provider retains the
+	// previous numbers and their timestamp rather than reporting zero.
+	if capacityKnown {
+		pool.Status.WorkloadCapacity = WorkloadCapacityStatus(
+			providerName(pool), hamiMode(pool), cap0, metav1.NewTime(r.now()))
+	}
+
+	waiting := 0
+	for _, c := range cells {
+		if c.Phase == cellsv1alpha1.CellPhaseAllocatingGPU || c.Phase == cellsv1alpha1.CellPhasePending {
+			waiting++
+		}
+	}
+
+	pool.Status.Conditions = ApplyConditions(pool.Status.Conditions, ComputeConditions(ConditionInput{
+		Generation:         pool.Generation,
+		Desired:            pool.Spec.Replicas,
+		Ready:              ready,
+		WorkloadReachable:  reachable,
+		WorkloadReason:     reachReason,
+		WorkloadMessage:    reachMsg,
+		ProviderHealth:     health,
+		CapacityKnown:      capacityKnown,
+		Capacity:           cap0,
+		FreeGPUs:           freeGPUs,
+		CellsWaitingForGPU: waiting,
+		Membership:         plan,
+		Progressing:        creating > 0 || draining > 0 || len(plan.Create) > 0,
+	}))
+	_ = ctx
+}
+
+// workloadClient resolves the pool's workload-cluster client. It returns
+// reachable=false with a reason rather than an error, because an unreachable
+// workload cluster is a state to report, not a reconcile failure to retry blindly.
+func (r *GPUCellPoolReconciler) workloadClient(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool,
+) (kubernetes.Interface, bool, string, string) {
+	var secret corev1.Secret
+	key := types.NamespacedName{Namespace: pool.Namespace, Name: pool.Spec.WorkloadCluster.KubeconfigSecretRef.Name}
+	if err := r.Get(ctx, key, &secret); err != nil {
+		reason := cellsv1alpha1.ReasonCredentialInvalid
+		if !apierrors.IsNotFound(err) {
+			reason = cellsv1alpha1.ReasonUnreachable
+		}
+		return nil, false, reason, fmt.Sprintf("reading kubeconfig secret %s: %v", key, err)
+	}
+
+	cs, err := r.Clients.For(clientKey(pool), &secret, pool.Spec.WorkloadCluster.Key)
+	if err != nil {
+		return nil, false, cellsv1alpha1.ReasonCredentialInvalid, err.Error()
+	}
+	if err := workload.Probe(ctx, cs); err != nil {
+		return nil, false, workload.ClassifyError(err), err.Error()
+	}
+	return cs, true, cellsv1alpha1.ReasonConnected, ""
+}
+
+// cellRequest builds the provisioner request for one cell.
+//
+// NOTE: the bootstrap Secret is referenced VERBATIM from spec.bootstrap. Per-cell
+// rendering with substitutions is not implemented yet, so the cloud-init must be
+// cell-agnostic — the guest hostname comes from the seed's meta-data (which IS
+// per-cell) and the identity labels are patched onto the Node by this controller.
+func (r *GPUCellPoolReconciler) cellRequest(pool *cellsv1alpha1.GPUCellPool, idx int32) provisioner.CellRequest {
+	name := cellid.Name(pool.Name, idx)
+	req := provisioner.CellRequest{
+		Pool:               pool.Name,
+		Namespace:          pool.Namespace,
+		Index:              idx,
+		CellName:           name,
+		GuestTemplate:      pool.Spec.Cell.GuestTemplate.Raw,
+		BootstrapSecretKey: pool.Spec.Bootstrap.JoinSecretKey,
+		Hostname:           name,
+		NodeIPFrom:         pool.Spec.Cell.NodeIPFrom,
+		SpreadPolicy:       pool.Spec.Cell.SpreadPolicy,
+		TemplateHash:       cellid.TemplateHash(pool.Spec.Cell.GuestTemplate.Raw),
+		OwnerRefs: []metav1.OwnerReference{*metav1.NewControllerRef(
+			pool, cellsv1alpha1.GroupVersion.WithKind("GPUCellPool"))},
+	}
+	if pool.Spec.Bootstrap.JoinSecretRef != nil {
+		req.BootstrapSecretName = pool.Spec.Bootstrap.JoinSecretRef.Name
+	}
+	if pool.Spec.Bootstrap.Hostname == "None" {
+		req.Hostname = ""
+	}
+
+	gpu := pool.Spec.Cell.GPU
+	req.GPU = provisioner.GPUBinding{Backend: gpu.Backend}
+	if req.GPU.Backend == "" {
+		req.GPU.Backend = cellsv1alpha1.GPUBackendDRA
+	}
+	if gpu.DRA != nil {
+		req.GPU.ResourceClaimTemplateName = gpu.DRA.ResourceClaimTemplateName
+		req.GPU.ResourceClaimName = gpu.DRA.ResourceClaimName
+		req.GPU.RequestName = gpu.DRA.RequestName
+		req.GPU.Tier = gpu.DRA.Tier
+		req.GPU.Hugepages = gpu.DRA.Hugepages
+	}
+	if gpu.Native != nil {
+		req.GPU.GPUProfileName = gpu.Native.GPUProfileRef.Name
+	}
+	return req
+}
+
+// SetupWithManager wires the reconciler and its watches.
+func (r *GPUCellPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Clients == nil {
+		r.Clients = workload.NewClientCache()
+	}
+	if r.Clock == nil {
+		r.Clock = time.Now
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&cellsv1alpha1.GPUCellPool{}).
+		Named("gpucellpool").
+		Complete(r)
+}
+
+func (r *GPUCellPoolReconciler) provisioner() provisioner.Provisioner {
+	if r.NewProvisioner != nil {
+		return r.NewProvisioner(r.Client)
+	}
+	return provisioner.NewSwiftGuestProvisioner(r.Client)
+}
+
+func (r *GPUCellPoolReconciler) provider(cs kubernetes.Interface, mode string) capacity.Provider {
+	if r.NewProvider != nil {
+		return r.NewProvider(cs, mode)
+	}
+	return capacity.NewHAMiProvider(cs, mode)
+}
+
+func (r *GPUCellPoolReconciler) now() time.Time {
+	if r.Clock != nil {
+		return r.Clock()
+	}
+	return time.Now()
+}
+
+func (r *GPUCellPoolReconciler) event(pool *cellsv1alpha1.GPUCellPool, kind, reason, msg string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(pool, kind, reason, msg)
+	}
+}
+
+func (r *GPUCellPoolReconciler) markDraining(cells []cellsv1alpha1.CellStatus, name string) {
+	for i := range cells {
+		if cells[i].Name == name {
+			cells[i].Phase = cellsv1alpha1.CellPhaseDraining
+			nowT := metav1.NewTime(r.now())
+			cells[i].LastTransitionTime = &nowT
+		}
+	}
+}
+
+// listCellGuests returns the names of this pool's cell guests, from the outer
+// cluster. Label-based rediscovery is what makes the controller stateless.
+func (r *GPUCellPoolReconciler) listCellGuests(ctx context.Context, pool *cellsv1alpha1.GPUCellPool) ([]string, error) {
+	list := &unstructuredList{}
+	list.SetGroupVersionKind(provisioner.SwiftGuestGVK.GroupVersion().WithKind("SwiftGuestList"))
+	if err := r.List(ctx, list,
+		client.InNamespace(pool.Namespace),
+		client.MatchingLabels{cellsv1alpha1.LabelPool: pool.Name},
+	); err != nil {
+		return nil, fmt.Errorf("listing cell guests: %w", err)
+	}
+	names := make([]string, 0, len(list.Items))
+	for i := range list.Items {
+		names = append(names, list.Items[i].GetName())
+	}
+	return names, nil
+}

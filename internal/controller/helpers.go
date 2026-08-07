@@ -1,0 +1,132 @@
+package controller
+
+import (
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+)
+
+// unstructuredList is an alias so the reconciler reads cleanly; KubeSwift kinds
+// are always reached unstructured (no AGPL import).
+type unstructuredList = unstructured.UnstructuredList
+
+func clientKey(pool *cellsv1alpha1.GPUCellPool) string {
+	return pool.Namespace + "/" + pool.Spec.WorkloadCluster.KubeconfigSecretRef.Name
+}
+
+func phaseOr(p cellsv1alpha1.CellPhase, fallback cellsv1alpha1.CellPhase) cellsv1alpha1.CellPhase {
+	if p == "" {
+		return fallback
+	}
+	return p
+}
+
+func transitionOr(t *metav1.Time, fallback time.Time) time.Time {
+	if t == nil {
+		return fallback
+	}
+	return t.Time
+}
+
+func durationOr(d *metav1.Duration, fallback time.Duration) time.Duration {
+	if d == nil || d.Duration == 0 {
+		return fallback
+	}
+	return d.Duration
+}
+
+// expectedDevices is how many GPUs a cell must advertise before it is Ready.
+// Defaults to the cell's GPU count, which is the only sensible default: a cell
+// that holds one device and advertises none is not usable.
+func expectedDevices(pool *cellsv1alpha1.GPUCellPool) int {
+	if h := pool.Spec.Capacity.HAMi; h != nil && h.ExpectedDevicesPerCell != nil {
+		return int(*h.ExpectedDevicesPerCell)
+	}
+	if c := pool.Spec.Cell.GPU.Count; c > 0 {
+		return int(c)
+	}
+	return 1
+}
+
+func hamiMode(pool *cellsv1alpha1.GPUCellPool) string {
+	if h := pool.Spec.Capacity.HAMi; h != nil && h.Mode != "" {
+		return h.Mode
+	}
+	return cellsv1alpha1.HAMiModeDevicePlugin
+}
+
+func providerName(pool *cellsv1alpha1.GPUCellPool) string {
+	if pool.Spec.Capacity.Provider != "" {
+		return pool.Spec.Capacity.Provider
+	}
+	return cellsv1alpha1.CapacityProviderHAMi
+}
+
+func deletionPolicy(pool *cellsv1alpha1.GPUCellPool) string {
+	if pool.Spec.Deletion != nil && pool.Spec.Deletion.Policy != "" {
+		return pool.Spec.Deletion.Policy
+	}
+	return cellsv1alpha1.DeletionPolicyDrain
+}
+
+func drainTimeout(pool *cellsv1alpha1.GPUCellPool) time.Duration {
+	if pool.Spec.Deletion != nil {
+		return durationOr(pool.Spec.Deletion.DrainTimeout, 10*time.Minute)
+	}
+	return 10 * time.Minute
+}
+
+func nodeLabels(pool *cellsv1alpha1.GPUCellPool) map[string]string {
+	if pool.Spec.WorkloadCluster.Node == nil {
+		return nil
+	}
+	return pool.Spec.WorkloadCluster.Node.Labels
+}
+
+func nodeAnnotations(pool *cellsv1alpha1.GPUCellPool) map[string]string {
+	if pool.Spec.WorkloadCluster.Node == nil {
+		return nil
+	}
+	return pool.Spec.WorkloadCluster.Node.Annotations
+}
+
+func nodeTaints(pool *cellsv1alpha1.GPUCellPool) []corev1.Taint {
+	if pool.Spec.WorkloadCluster.Node == nil {
+		return nil
+	}
+	return pool.Spec.WorkloadCluster.Node.Taints
+}
+
+// everReady reports whether any cell has ever reached Ready — the signal that
+// distinguishes a burst of failures from a pool that has never worked. It is
+// derived from live state plus the pool's own Ready condition history, so it
+// survives an operator restart.
+func everReady(pool *cellsv1alpha1.GPUCellPool, cells []cellsv1alpha1.CellStatus) bool {
+	for _, c := range cells {
+		if c.Phase == cellsv1alpha1.CellPhaseReady {
+			return true
+		}
+	}
+	for _, c := range pool.Status.Conditions {
+		if c.Type == cellsv1alpha1.ConditionReady && c.Reason == cellsv1alpha1.ReasonAllCellsReady {
+			return true
+		}
+	}
+	return pool.Status.ReadyCells > 0
+}
+
+// readyNodeNames are the cells whose Node has registered — the only ones a
+// capacity provider can say anything about.
+func readyNodeNames(cells []cellsv1alpha1.CellStatus) []string {
+	var out []string
+	for _, c := range cells {
+		if c.NodeName != "" {
+			out = append(out, c.NodeName)
+		}
+	}
+	return out
+}

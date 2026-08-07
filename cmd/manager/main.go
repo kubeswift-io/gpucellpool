@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -20,6 +21,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+	"github.com/kubeswift-io/gpucellpool/internal/controller"
+	"github.com/kubeswift-io/gpucellpool/internal/workload"
 )
 
 var (
@@ -63,10 +66,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO(phase-2): register GPUCellPoolReconciler here. See
-	// docs/design/gpucellpool-reconciliation.md §1 for the component split and §4
-	// for the loop. The manager intentionally starts with no controllers so the
-	// binary, scheme registration and CRD install can be validated on their own.
+	if err := (&controller.GPUCellPoolReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("gpucellpool"),
+		Clients:  workload.NewClientCache(),
+		Clock:    time.Now,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up the GPUCellPool controller")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
