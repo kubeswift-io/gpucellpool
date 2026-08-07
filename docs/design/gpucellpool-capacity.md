@@ -33,9 +33,10 @@ type CapacityProvider interface {
 	// the scale-down / drain gate. Non-zero blocks deletion.
 	Allocations(ctx context.Context, node string) (Allocations, error)
 
-	// PendingDemand reports unsatisfiable GPU demand (Phase 3; returns
-	// ErrUnsupported in the MVP).
-	PendingDemand(ctx context.Context) (Demand, error)
+	// PendingDemand reports unsatisfiable GPU demand. ref is the device a fresh
+	// cell would bring, used to judge satisfiability; nil means the shape is
+	// unknown and nothing is reported satisfiable.
+	PendingDemand(ctx context.Context, ref *Device) (Demand, error)
 }
 ```
 
@@ -254,10 +255,28 @@ failed; it is retained with `lastObserved` and a False condition.
 
 ---
 
-## 8. Pending demand (Phase 3 groundwork, not implemented)
+## 8. Pending demand (IMPLEMENTED for DevicePlugin mode)
 
-`PendingDemand` returns `ErrUnsupported` in the MVP. The design intent, recorded so
-Phase 3 does not have to re-derive it:
+Shipped as designed, and the design's own warning turned out to be free rather than
+hard: **the discriminator is `PodScheduled=False` with reason `Unschedulable`.** A
+pod pending on a missing ConfigMap has already been SCHEDULED, so it carries
+`PodScheduled=True` and never appears as demand. The canonical false positive is
+impossible rather than merely filtered.
+
+The second gate is satisfiability against a reference device — the shape a fresh
+cell would bring, learned from what the pool already advertises. A request for two
+devices, or for more memory or compute than one device has, is counted as pending
+and explicitly NOT satisfiable: adding a cell would burn a GPU and a VM boot to
+change nothing. An empty pool yields no reference shape, and then nothing is
+reported satisfiable, because an automatic action must not run on a guess.
+
+Measured note that shaped this: HAMi refuses an over-large request at SCHEDULING
+time ("0/1 nodes are available: 1 NodeUnfitPod"), so over-large requests do show up
+as unschedulable pods and the second gate is what stops them driving a scale-up.
+
+DRA mode still returns `ErrUnsupported`.
+
+The original design intent, kept for the DRA implementation:
 
 - **DRA mode is the good signal**: a `ResourceClaim` in `WaitingForFirstConsumer`/
   unallocated state whose `deviceClassName` is the pool's HAMi class, with

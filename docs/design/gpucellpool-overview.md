@@ -178,8 +178,8 @@ deletion; metrics.
 
 | Postponed | Extension point already in the design |
 |---|---|
-| automatic scale-down | `deletion.policy` + the `Draining` cell state + finalizer (Phase 4 flips the trigger from manual to policy) |
-| demand-driven scale-up | `ScalingPolicy` component + `spec.autoscaling` block (D2) |
+| automatic scale-down | `deletion.policy` + the `Draining` cell state + finalizer + `spec.autoscaling.scaleDown` (Phase 4 flips that enum from Manual to Auto; the value is rejected until then) |
+| ~~demand-driven scale-up~~ | **shipped**: `spec.autoscaling` + `DecideScale` + `PendingDemand`. Four gates: unread demand, unsatisfiable demand, the ceiling, a saturated cluster — plus a stabilization window, because a cell measured ~14 minutes to Ready and demand does not clear until it is |
 | multi-GPU / NVLink cells | `cell.gpu.count` validated `== 1` in v1alpha1; the GPU intent already carries topology |
 | MIG, overcommit policy | `CapacityProvider` mode enum; MIG is an inner-layer concern that changes only capacity parsing |
 | multiple workload clusters per pool | `spec.workloadCluster` is a struct, not a list — one pool per cluster; a fleet view is a `Cluster`-CRD/gateway concern |
@@ -233,9 +233,9 @@ GPU-sharing alone provides.
 | 0 | this design set | — |
 | 1 | hardware proof: GPU → cell VM → nvidia driver → HAMi → 2 fractional workloads, done by hand | **boba/GTX 1080; blocks everything** |
 | 2 | static `GPUCellPool` (MVP, §5) | Phase 1 PASS |
-| 3 | demand-driven scale-**up** (pending-claim/pod signal, guarded) | Phase 2 stable |
+| 3 | demand-driven scale-**up** (pending-pod signal, guarded) — **DONE** | Phase 2 stable |
 | 4 | safe scale-**down** + automated outer-drain sequencing | Phase 3 stable |
-| 5 | `provisioner: ClusterAPI` (needs GPU fields in `capi-kubeswift`) | Phase 2; independent of 3/4 |
+| 5 | `provisioner: ClusterAPI` — the `capi-kubeswift` GPU field landed as PR #19; the provisioner itself is next | Phase 2; independent of 3/4 |
 
 The lab has exactly **one** GPU (boba, GTX 1080). Phase 1 is fully doable;
 `replicas ≥ 2` is hardware-gated and must be validated against a faked capacity
