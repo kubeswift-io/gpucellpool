@@ -33,8 +33,9 @@ spec:
         - name: mgmt
           primary: true
         - name: node
+          # KubeSwift's networkRef takes {name, namespace} only — the NAD kind is
+          # implied. Adding a "kind" field is rejected by strict decoding.
           networkRef:
-            kind: NetworkAttachmentDefinition
             name: cell-net
 
     # The kubelet registers the address of this interface as --node-ip, so the

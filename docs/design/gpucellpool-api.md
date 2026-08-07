@@ -75,7 +75,7 @@ spec:
       storage: {storageClassName: longhorn-r1, accessMode: ReadWriteOnce}
       interfaces:                        # the validated multi-node worker shape
         - {name: mgmt, primary: true}
-        - {name: node, networkRef: {kind: NetworkAttachmentDefinition, name: cell-udn}}
+        - {name: node, networkRef: {name: cell-udn}}   # {name,namespace} only
       topologySpreadConstraints: [...]    # or use spreadPolicy below
     gpu:
       count: 1                           # v1alpha1: must be 1

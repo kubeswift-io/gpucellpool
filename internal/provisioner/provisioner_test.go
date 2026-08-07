@@ -299,18 +299,28 @@ func TestObserve(t *testing.T) {
 		}
 	})
 
-	t.Run("nodeIPFrom never falls back to the primary", func(t *testing.T) {
-		// Falling back would register the node-local, non-routable nat address —
-		// the exact failure cell.nodeIPFrom exists to prevent.
+	t.Run("an unreported routable address does not stall the cell", func(t *testing.T) {
+		// Measured on KubeSwift v0.13.4: for a bridge NAD the status carries the
+		// secondary interface's MAC but no IP, even though the guest has the
+		// address. Gating on it would park every such cell in Booting forever.
+		// The address is only a readiness signal — the guest derives its own node
+		// IP — so falling back is right, and RoutableAddress stays empty to record
+		// that we could not observe it.
 		st := observe(base(map[string]any{
 			"phase": "Running",
 			"network": map[string]any{
-				"primaryIP":  "192.168.99.10",
-				"interfaces": []any{map[string]any{"name": "mgmt", "ip": "192.168.99.10"}},
+				"primaryIP": "192.168.99.10",
+				"interfaces": []any{
+					map[string]any{"name": "mgmt", "ip": "192.168.99.10"},
+					map[string]any{"name": "node", "mac": "52:54:00:ca:ad:1f"},
+				},
 			},
 		}), "node")
-		if st.Address != "" || st.Provisioned {
-			t.Errorf("fell back to the primary address: %+v", st)
+		if !st.Provisioned || st.Address != "192.168.99.10" {
+			t.Errorf("cell stalled on an unobservable routable address: %+v", st)
+		}
+		if st.RoutableAddress != "" {
+			t.Errorf("RoutableAddress = %q, want empty when KubeSwift reports no IP", st.RoutableAddress)
 		}
 	})
 
@@ -325,7 +335,7 @@ func TestObserve(t *testing.T) {
 				},
 			},
 		}), "node")
-		if st.Address != "10.77.0.5" || !st.Provisioned {
+		if st.Address != "10.77.0.5" || st.RoutableAddress != "10.77.0.5" || !st.Provisioned {
 			t.Errorf("got %+v", st)
 		}
 	})

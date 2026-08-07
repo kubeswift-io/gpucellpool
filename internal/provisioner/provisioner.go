@@ -103,9 +103,18 @@ type OuterState struct {
 	// HostNode is the outer node whose physical GPU this cell holds.
 	HostNode string
 
-	// Address is the address the kubelet should register (from NodeIPFrom, or
-	// the primary interface).
+	// Address is the best-known address for the VM: the NodeIPFrom interface's
+	// when KubeSwift reports one, else the primary. It is a readiness signal
+	// only — the operator does not control what the kubelet registers, because
+	// cloud-init derives that in-guest.
 	Address string
+
+	// RoutableAddress is the NodeIPFrom interface's address, empty when KubeSwift
+	// does not report one. Measured on KubeSwift v0.13.4: for a bridge NAD the
+	// status carries the secondary interface's MAC but NOT its IP, so this is
+	// often empty even though the guest has the address. It is used to VERIFY
+	// which address a Node registered with, never to gate progress.
+	RoutableAddress string
 
 	// UID is the outer object's UID — the cell's instance anchor, used to spot a
 	// workload Node left behind by a previous incarnation.

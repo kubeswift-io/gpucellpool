@@ -172,7 +172,17 @@ func observe(guest *unstructured.Unstructured, nodeIPFrom string) OuterState {
 	if devs, ok, _ := unstructured.NestedStringSlice(guest.Object, "status", "gpu", "devices"); ok {
 		st.GPUDevices = devs
 	}
-	st.Address = address(guest, nodeIPFrom)
+	st.RoutableAddress = address(guest, nodeIPFrom)
+	st.Address = st.RoutableAddress
+	if st.Address == "" {
+		// KubeSwift may know an interface without reporting its address (bridge
+		// NADs on v0.13.4 report the MAC only). Falling back is correct here
+		// because this address is a readiness signal, not something the kubelet
+		// consumes: the guest derives its own node IP. Verification of WHICH
+		// address the Node actually registered with happens against the inner
+		// cluster, where the truth is.
+		st.Address, _, _ = unstructured.NestedString(guest.Object, "status", "network", "primaryIP")
+	}
 
 	switch st.Phase {
 	case "Failed":

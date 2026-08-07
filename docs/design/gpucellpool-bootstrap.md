@@ -225,6 +225,34 @@ guess made now.
 
 ---
 
+## 6a. Two things the first live run corrected (2026-08-07)
+
+**`networkRef` takes `{name, namespace}` only.** Earlier drafts of this design and
+its sample showed a `kind: NetworkAttachmentDefinition` field. KubeSwift's strict
+decoding rejects it outright. Fixed in `-api.md` and `config/samples/`.
+
+**`cell.nodeIPFrom` names a KUBESWIFT interface, not a guest device.** Cloud-init
+inside the guest cannot map `node` to `ens4`, so the template derives the address
+by subnet instead:
+
+```bash
+NODE_IP=$(ip -4 -o addr show | awk '/10\.77\.0\./ {split($4,a,"/"); print a[1]; exit}')
+```
+
+That works, but it means the user hardcodes their cell subnet in the template. The
+alternatives are worse today: the address is not known at render time (DHCP/IPAM
+assign it after the guest exists), and neither is the MAC. A future
+`{{ nodeMAC }}` would need KubeSwift to expose the guest-side MAC before boot.
+
+Related, and more consequential: **KubeSwift v0.13.4 does not report a secondary
+NAD interface's IP in `status.network.interfaces[]`** — it carries the MAC only
+(measured; the guest genuinely has the address). The operator therefore treats
+`nodeIPFrom` as an OBSERVATION field: it reports the routable address when
+KubeSwift exposes one, falls back to the primary for the readiness gate, and
+verifies which address the Node actually registered with against the inner
+cluster, where the truth is. Gating on the routable address would park every
+bridge-NAD cell in `Booting` forever.
+
 ## 7. Open bootstrap questions
 
 1. **k0s token minting** — is there an API-only path (a `k0s` join token is not a
