@@ -40,7 +40,6 @@ func NewFakeProvider() *FakeProvider {
 		HealthResult:      Health{Ready: true, Reason: "FakeDetected"},
 		DevicesByNode:     map[string]int{},
 		AllocationsByNode: map[string]Allocations{},
-		DemandErr:         ErrUnsupported,
 	}
 }
 
@@ -85,7 +84,7 @@ func (f *FakeProvider) Allocations(_ context.Context, node string) (Allocations,
 }
 
 // PendingDemand implements Provider.
-func (f *FakeProvider) PendingDemand(_ context.Context) (Demand, error) {
+func (f *FakeProvider) PendingDemand(_ context.Context, _ *Device) (Demand, error) {
 	f.record("PendingDemand")
 	return f.DemandResult, f.DemandErr
 }

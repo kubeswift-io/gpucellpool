@@ -207,11 +207,6 @@ func (p *HAMiProvider) Allocations(ctx context.Context, node string) (Allocation
 	return a, err
 }
 
-// PendingDemand implements Provider. Phase 3.
-func (p *HAMiProvider) PendingDemand(ctx context.Context) (Demand, error) {
-	return Demand{}, ErrUnsupported
-}
-
 // nodeAllocations sums what pods on a node hold, and returns the per-device
 // breakdown for model attribution.
 func (p *HAMiProvider) nodeAllocations(ctx context.Context, node string) (Allocations, map[string]Allocation, error) {

@@ -22,6 +22,11 @@ const (
 	// ConditionPhysicalGPUsAvailable is False only when a cell is waiting for a
 	// physical GPU and the outer inventory has none free.
 	ConditionPhysicalGPUsAvailable = "PhysicalGPUsAvailable"
+	// ConditionScalingActive is True when demand-driven scale-up is enabled and
+	// the pool is reading demand successfully. Its reason carries the last
+	// decision, which is where an operator looks to understand why the pool did
+	// or did not grow.
+	ConditionScalingActive = "ScalingActive"
 	// ConditionCellDrainRequested is True when an outer node holding a cell is
 	// being drained or cordoned. Cells are never offline-migrated, so this is a
 	// signal for the operator (and, later, for automated replacement).
@@ -69,6 +74,12 @@ const (
 	ReasonCellReplacementExhausted   = "CellReplacementExhausted"
 	ReasonWaitingForAllocations      = "WaitingForAllocations"
 	ReasonDrainTimedOut              = "DrainTimedOut"
+
+	// Scaling reasons (Phase 3, scale-up).
+	ReasonScaledUp            = "ScaledUp"
+	ReasonStabilizing         = "Stabilizing"
+	ReasonAtMaxReplicas       = "AtMaxReplicas"
+	ReasonDemandUnsatisfiable = "DemandUnsatisfiable"
 )
 
 // Labels the operator stamps on the objects it owns, in both clusters. They are

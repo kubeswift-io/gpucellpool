@@ -99,6 +99,13 @@ type ConditionInput struct {
 
 	Membership  MembershipPlan
 	Progressing bool
+
+	// Autoscaling reports whether demand-driven scale-up is enabled, and Scale is
+	// the last decision — the reason is where an operator looks to understand why
+	// the pool did or did not grow.
+	Autoscaling bool
+	Scale       ScaleDecision
+	DemandKnown bool
 }
 
 // ComputeConditions returns the pool's conditions. They split the layers on
@@ -189,6 +196,12 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 		progMsg = in.Membership.Message
 	}
 	set(cellsv1alpha1.ConditionProgressing, progressing, progReason, progMsg)
+
+	// Scaling. Only present when enabled, so a pool that does not autoscale is not
+	// cluttered with a condition about it.
+	if in.Autoscaling {
+		set(cellsv1alpha1.ConditionScalingActive, in.DemandKnown, in.Scale.Reason, in.Scale.Message)
+	}
 
 	// Aggregate.
 	ready := in.Ready == in.Desired

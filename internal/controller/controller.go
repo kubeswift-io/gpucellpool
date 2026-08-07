@@ -104,9 +104,57 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		freeGPUs = &counts.Free
 	}
 
+	// Capacity and demand BEFORE membership: the scaling decision needs both.
+	var (
+		cap0          capacity.Capacity
+		capacityKnown bool
+		health        capacity.Health
+		demand        capacity.Demand
+		demandKnown   bool
+	)
+	if reachable && provider != nil {
+		nodes := readyNodeNames(cells)
+		if h, hErr := provider.Health(ctx, nodes); hErr != nil {
+			health = capacity.Health{Reason: cellsv1alpha1.ReasonHAMiNotDetected, Message: hErr.Error()}
+		} else {
+			health = h
+		}
+		if c, cErr := provider.Capacity(ctx, nodes); cErr != nil {
+			log.V(1).Info("capacity unreadable; retaining the last known values", "err", cErr.Error())
+		} else {
+			cap0, capacityKnown = c, true
+		}
+		if autoscalingEnabled(&pool) {
+			// The reference device is what a fresh cell would bring, learned from
+			// what the pool already advertises. Nil means we cannot judge
+			// satisfiability, and the scaler then refuses to act.
+			if d, dErr := provider.PendingDemand(ctx, ReferenceDevice(cap0)); dErr != nil {
+				log.V(1).Info("GPU demand unreadable; not scaling", "err", dErr.Error())
+			} else {
+				demand, demandKnown = d, true
+			}
+		}
+	}
+
+	scale := DecideScale(ScaleInput{
+		Replicas:    pool.Spec.Replicas,
+		Autoscaling: pool.Spec.Autoscaling,
+		LiveCells:   liveCells(cells),
+		Demand:      demand,
+		DemandKnown: demandKnown,
+		FreeGPUs:    freeGPUs,
+		Now:         r.now(),
+		LastScaleUp: pool.Status.LastScaleUpTime,
+	})
+	if scale.ScaledUp {
+		nowT := metav1.NewTime(r.now())
+		pool.Status.LastScaleUpTime = &nowT
+		r.event(&pool, corev1.EventTypeNormal, scale.Reason, scale.Message)
+	}
+
 	// Steps 5-6: membership.
 	plan := PlanMembership(MembershipInput{
-		Desired:           pool.Spec.Replicas,
+		Desired:           scale.Desired,
 		Cells:             cells,
 		Now:               r.now(),
 		FreeGPUs:          freeGPUs,
@@ -155,27 +203,8 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	// Steps 9-10: capacity.
-	var (
-		cap0          capacity.Capacity
-		capacityKnown bool
-		health        capacity.Health
-	)
-	if reachable && provider != nil {
-		nodes := readyNodeNames(cells)
-		if h, hErr := provider.Health(ctx, nodes); hErr != nil {
-			health = capacity.Health{Reason: cellsv1alpha1.ReasonHAMiNotDetected, Message: hErr.Error()}
-		} else {
-			health = h
-		}
-		if c, cErr := provider.Capacity(ctx, nodes); cErr != nil {
-			log.V(1).Info("capacity unreadable; retaining the last known values", "err", cErr.Error())
-		} else {
-			cap0, capacityKnown = c, true
-		}
-	}
-
-	r.writeStatus(ctx, &pool, cells, plan, freeGPUs, health, cap0, capacityKnown, reachable, reachReason, reachMsg)
+	r.writeStatus(ctx, &pool, cells, plan, scale, demand, demandKnown,
+		freeGPUs, health, cap0, capacityKnown, reachable, reachReason, reachMsg)
 	if err := r.Status().Update(ctx, &pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 	}
@@ -520,8 +549,9 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 
 func (r *GPUCellPoolReconciler) writeStatus(
 	ctx context.Context, pool *cellsv1alpha1.GPUCellPool,
-	cells []cellsv1alpha1.CellStatus, plan MembershipPlan, freeGPUs *int,
-	health capacity.Health, cap0 capacity.Capacity, capacityKnown bool,
+	cells []cellsv1alpha1.CellStatus, plan MembershipPlan,
+	scale ScaleDecision, demand capacity.Demand, demandKnown bool,
+	freeGPUs *int, health capacity.Health, cap0 capacity.Capacity, capacityKnown bool,
 	reachable bool, reachReason, reachMsg string,
 ) {
 	total, ready, creating, draining, failed := CountCells(cells)
@@ -533,6 +563,16 @@ func (r *GPUCellPoolReconciler) writeStatus(
 	pool.Status.DrainingCells = draining
 	pool.Status.FailedCells = failed
 	pool.Status.Cells = cells
+	pool.Status.DesiredReplicas = scale.Desired
+
+	if autoscalingEnabled(pool) && demandKnown {
+		observed := metav1.NewTime(r.now())
+		pool.Status.Demand = &cellsv1alpha1.DemandStatus{
+			PendingRequests:      int32(demand.PendingRequests),
+			SatisfiableByOneCell: int32(demand.SatisfiableByOneCell),
+			LastObserved:         &observed,
+		}
+	}
 
 	held := 0
 	for _, c := range cells {
@@ -576,6 +616,9 @@ func (r *GPUCellPoolReconciler) writeStatus(
 		CellsWaitingForGPU: waiting,
 		Membership:         plan,
 		Progressing:        creating > 0 || draining > 0 || len(plan.Create) > 0,
+		Autoscaling:        autoscalingEnabled(pool),
+		Scale:              scale,
+		DemandKnown:        demandKnown,
 	}))
 	_ = ctx
 }

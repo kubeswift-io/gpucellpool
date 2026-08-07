@@ -298,13 +298,6 @@ func TestAllocationsGateDrain(t *testing.T) {
 	})
 }
 
-func TestPendingDemandIsExplicitlyUnsupported(t *testing.T) {
-	p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDevicePlugin)
-	if _, err := p.PendingDemand(context.Background()); !errors.Is(err, ErrUnsupported) {
-		t.Errorf("PendingDemand = %v, want ErrUnsupported until Phase 3", err)
-	}
-}
-
 func TestFakeProviderSatisfiesTheInterface(t *testing.T) {
 	f := NewFakeProvider()
 	f.DevicesByNode["cell-0"] = 1

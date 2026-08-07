@@ -60,13 +60,13 @@ type Allocations struct {
 // Empty reports whether a cell can be removed without destroying work.
 func (a Allocations) Empty() bool { return a.Consumers == 0 && !a.InFlight }
 
-// Demand is unsatisfiable GPU demand in the workload cluster (Phase 3).
+// Demand is unsatisfiable GPU demand in the workload cluster.
 type Demand struct {
-	// PendingClaims is the number of GPU requests that cannot be placed.
-	PendingClaims int
+	// PendingRequests is the number of GPU requests that cannot be placed.
+	PendingRequests int
 	// SatisfiableByOneCell is how many of them a fresh cell of this pool's shape
 	// would actually satisfy. Scaling on anything else creates cells that do not
-	// help.
+	// help, so this is what a scaling decision must use.
 	SatisfiableByOneCell int
 }
 
@@ -89,7 +89,11 @@ type Provider interface {
 	// Allocations reports what still holds one node's GPU.
 	Allocations(ctx context.Context, node string) (Allocations, error)
 
-	// PendingDemand reports unsatisfiable demand. Returns ErrUnsupported until
-	// Phase 3.
-	PendingDemand(ctx context.Context) (Demand, error)
+	// PendingDemand reports unsatisfiable GPU demand.
+	//
+	// ref is the reference device a fresh cell of this pool would bring, used to
+	// judge satisfiability. A nil ref means we do not know the shape (an empty
+	// pool has no advertised device to learn it from), in which case nothing is
+	// reported as satisfiable: an automatic action must not run on a guess.
+	PendingDemand(ctx context.Context, ref *Device) (Demand, error)
 }

@@ -35,9 +35,67 @@ type GPUCellPoolSpec struct {
 	// +optional
 	Capacity CapacitySpec `json:"capacity,omitempty"`
 
+	// Autoscaling, when enabled, lets unsatisfiable GPU demand in the WORKLOAD
+	// cluster create cells. Scale-UP only in v1alpha1 (see AutoscalingSpec).
+	// +optional
+	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
+
 	// Deletion controls teardown behaviour for the pool.
 	// +optional
 	Deletion *DeletionSpec `json:"deletion,omitempty"`
+}
+
+// Scale-down modes.
+const (
+	// ScaleDownManual leaves shrinking to the operator: change spec.replicas (or
+	// minReplicas) and the drain path runs. The default, and the only supported
+	// value in v1alpha1.
+	ScaleDownManual = "Manual"
+	// ScaleDownAuto lets the pool shrink itself. Not implemented: destroying
+	// someone's running work on a heuristic is the one unrecoverable mistake in
+	// this architecture, so it is a separate phase with its own evidence.
+	ScaleDownAuto = "Auto"
+)
+
+// AutoscalingSpec turns unsatisfiable GPU demand into cells.
+//
+// Only scale-UP is implemented. Two filters gate every decision, and they are the
+// entire safety of the feature: the demand must be GPU-capacity-constrained, AND a
+// fresh cell of THIS pool's shape must actually satisfy it. A pod pending on a
+// missing ConfigMap, a wrong nodeSelector, an impossible GPU model, or a request
+// larger than one whole GPU must never create a cell.
+type AutoscalingSpec struct {
+	// Enabled turns demand-driven scale-up on. When false (the default) the pool
+	// holds exactly spec.replicas.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// MinReplicas is the floor the pool never drops below. Defaults to
+	// spec.replicas at the time autoscaling is enabled.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MinReplicas *int32 `json:"minReplicas,omitempty"`
+
+	// MaxReplicas is the ceiling. Required when enabled: an unbounded pool that
+	// misreads demand can consume every GPU in the cluster.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
+
+	// StabilizationWindow is how long to wait after a scale-up before scaling up
+	// again. A cell takes minutes to become Ready (measured: ~14 minutes with
+	// install-at-boot, less with a baked image), and demand does not clear until
+	// it does — so without this window one burst of pending pods creates a cell
+	// per reconcile.
+	// +kubebuilder:default="10m"
+	// +optional
+	StabilizationWindow *metav1.Duration `json:"stabilizationWindow,omitempty"`
+
+	// ScaleDown is Manual (default) or Auto. Auto is rejected in v1alpha1.
+	// +kubebuilder:validation:Enum=Manual;Auto
+	// +kubebuilder:default=Manual
+	// +optional
+	ScaleDown string `json:"scaleDown,omitempty"`
 }
 
 // CellSpec is the shape of a single cell.
@@ -519,6 +577,20 @@ type GPUCellPoolStatus struct {
 	// +optional
 	FailedCells int32 `json:"failedCells,omitempty"`
 
+	// DesiredReplicas is what the scaling policy asked for. It equals
+	// spec.replicas unless autoscaling is enabled.
+	// +optional
+	DesiredReplicas int32 `json:"desiredReplicas,omitempty"`
+
+	// Demand is the last GPU-demand reading from the workload cluster, present
+	// only when autoscaling is enabled.
+	// +optional
+	Demand *DemandStatus `json:"demand,omitempty"`
+
+	// LastScaleUpTime gates the stabilization window.
+	// +optional
+	LastScaleUpTime *metav1.Time `json:"lastScaleUpTime,omitempty"`
+
 	// PhysicalCapacity is outer capacity (whole GPUs).
 	// +optional
 	PhysicalCapacity *PhysicalCapacityStatus `json:"physicalCapacity,omitempty"`
@@ -540,6 +612,21 @@ type GPUCellPoolStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// DemandStatus is unsatisfiable GPU demand observed in the workload cluster.
+type DemandStatus struct {
+	// PendingRequests is how many GPU requests cannot currently be placed.
+	PendingRequests int32 `json:"pendingRequests"`
+
+	// SatisfiableByOneCell is how many of them a fresh cell of this pool's shape
+	// would actually satisfy. Scaling on anything else creates cells that do not
+	// help, so this — not PendingRequests — is what drives the decision.
+	SatisfiableByOneCell int32 `json:"satisfiableByOneCell"`
+
+	// LastObserved is when this reading was taken.
+	// +optional
+	LastObserved *metav1.Time `json:"lastObserved,omitempty"`
 }
 
 // GPUCellPool is a pool of VM-isolated, fractionally-shared GPU worker nodes.

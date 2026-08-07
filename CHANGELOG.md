@@ -23,6 +23,22 @@ All notable changes to this project are documented here. The format follows
   physical GPU, one KubeSwift VM, two workloads sharing it through HAMi, with
   neither upstream project modified.
 
+### Added — demand-driven scale-up (Phase 3)
+
+- `spec.autoscaling`: `enabled`, `minReplicas`, `maxReplicas`, `stabilizationWindow`,
+  `scaleDown` (`Manual` only; `Auto` is rejected). `maxReplicas` is required when
+  enabled, because an unbounded pool that misreads demand can consume every GPU in
+  the cluster.
+- `PendingDemand` for HAMi DevicePlugin mode. Two filters are the whole safety of
+  the feature: only pods the scheduler could not place count (`PodScheduled=False`
+  / `Unschedulable`, which naturally excludes a pod stuck on a missing ConfigMap —
+  that pod was scheduled), and only requests one fresh cell could actually satisfy
+  count toward a decision.
+- Scale-up is one cell at a time, behind a stabilization window, and never on
+  unread demand, an unknown cell shape, a saturated cluster, or a ceiling already
+  reached. `status.demand`, `status.desiredReplicas`, `status.lastScaleUpTime` and
+  the `ScalingActive` condition report every decision and its reason.
+
 ### Fixed (from the first live run)
 
 - `cell.nodeIPFrom` is an observation field, not a readiness gate. KubeSwift
@@ -35,8 +51,10 @@ All notable changes to this project are documented here. The format follows
 ### Known gaps
 
 - `hami.mode: DRA` reports `ErrUnsupported`; only DevicePlugin mode is implemented.
-- Autoscaling is not implemented: `spec.replicas` is fixed, and scale-down is
-  operator-triggered.
+- Automatic scale-DOWN is not implemented (`scaleDown: Auto` is rejected):
+  shrinking on a heuristic is the one unrecoverable mistake in this architecture,
+  so it is a separate phase. Shrinking works today by changing `spec.replicas` or
+  `minReplicas`, which runs the drain path.
 - `cell.provisioner: ClusterAPI` is rejected; only the SwiftGuest provisioner exists.
 - The webhook's certificate wiring has no envtest coverage (its validation logic does).
 - A join template must derive the cell's routable address by subnet: `nodeIPFrom`

@@ -119,6 +119,29 @@ func everReady(pool *cellsv1alpha1.GPUCellPool, cells []cellsv1alpha1.CellStatus
 	return pool.Status.ReadyCells > 0
 }
 
+// autoscalingEnabled reports whether demand-driven scale-up is on.
+func autoscalingEnabled(pool *cellsv1alpha1.GPUCellPool) bool {
+	return pool.Spec.Autoscaling != nil && pool.Spec.Autoscaling.Enabled
+}
+
+// liveCells counts cells that exist and are not on their way out — the baseline a
+// scaling decision grows from.
+func liveCells(cells []cellsv1alpha1.CellStatus) int32 {
+	var n int32
+	for _, c := range cells {
+		switch c.Phase {
+		case cellsv1alpha1.CellPhaseDraining, cellsv1alpha1.CellPhaseDeleting:
+		case cellsv1alpha1.CellPhaseFailed:
+			if c.GuestUID != "" {
+				n++ // still occupies its index and possibly its GPU
+			}
+		default:
+			n++
+		}
+	}
+	return n
+}
+
 // readyNodeNames are the cells whose Node has registered — the only ones a
 // capacity provider can say anything about.
 func readyNodeNames(cells []cellsv1alpha1.CellStatus) []string {

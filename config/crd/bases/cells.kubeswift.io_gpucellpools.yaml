@@ -67,6 +67,48 @@ spec:
               split deliberately: spec.cell is the SHAPE of one cell, spec.replicas is POOL
               POLICY. They never mix (design principle 9.3).
             properties:
+              autoscaling:
+                description: |-
+                  Autoscaling, when enabled, lets unsatisfiable GPU demand in the WORKLOAD
+                  cluster create cells. Scale-UP only in v1alpha1 (see AutoscalingSpec).
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled turns demand-driven scale-up on. When false (the default) the pool
+                      holds exactly spec.replicas.
+                    type: boolean
+                  maxReplicas:
+                    description: |-
+                      MaxReplicas is the ceiling. Required when enabled: an unbounded pool that
+                      misreads demand can consume every GPU in the cluster.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  minReplicas:
+                    description: |-
+                      MinReplicas is the floor the pool never drops below. Defaults to
+                      spec.replicas at the time autoscaling is enabled.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  scaleDown:
+                    default: Manual
+                    description: ScaleDown is Manual (default) or Auto. Auto is rejected
+                      in v1alpha1.
+                    enum:
+                    - Manual
+                    - Auto
+                    type: string
+                  stabilizationWindow:
+                    default: 10m
+                    description: |-
+                      StabilizationWindow is how long to wait after a scale-up before scaling up
+                      again. A cell takes minutes to become Ready (measured: ~14 minutes with
+                      install-at-boot, less with a baked image), and demand does not clear until
+                      it does — so without this window one burst of pending pods creates a cell
+                      per reconcile.
+                    type: string
+                type: object
               bootstrap:
                 description: Bootstrap describes how a cell becomes a worker of the
                   workload cluster.
@@ -565,12 +607,47 @@ spec:
               creatingCells:
                 format: int32
                 type: integer
+              demand:
+                description: |-
+                  Demand is the last GPU-demand reading from the workload cluster, present
+                  only when autoscaling is enabled.
+                properties:
+                  lastObserved:
+                    description: LastObserved is when this reading was taken.
+                    format: date-time
+                    type: string
+                  pendingRequests:
+                    description: PendingRequests is how many GPU requests cannot currently
+                      be placed.
+                    format: int32
+                    type: integer
+                  satisfiableByOneCell:
+                    description: |-
+                      SatisfiableByOneCell is how many of them a fresh cell of this pool's shape
+                      would actually satisfy. Scaling on anything else creates cells that do not
+                      help, so this — not PendingRequests — is what drives the decision.
+                    format: int32
+                    type: integer
+                required:
+                - pendingRequests
+                - satisfiableByOneCell
+                type: object
+              desiredReplicas:
+                description: |-
+                  DesiredReplicas is what the scaling policy asked for. It equals
+                  spec.replicas unless autoscaling is enabled.
+                format: int32
+                type: integer
               drainingCells:
                 format: int32
                 type: integer
               failedCells:
                 format: int32
                 type: integer
+              lastScaleUpTime:
+                description: LastScaleUpTime gates the stabilization window.
+                format: date-time
+                type: string
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation this status
                   reflects.

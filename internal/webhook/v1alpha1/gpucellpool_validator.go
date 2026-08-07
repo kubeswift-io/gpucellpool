@@ -84,6 +84,7 @@ func Validate(pool, old *cellsv1alpha1.GPUCellPool) field.ErrorList {
 	errs = append(errs, validateBootstrap(spec.Child("bootstrap"), pool.Spec.Bootstrap)...)
 	errs = append(errs, validateWorkloadCluster(spec.Child("workloadCluster"), pool.Spec.WorkloadCluster)...)
 	errs = append(errs, validateCapacity(spec.Child("capacity"), pool.Spec.Capacity)...)
+	errs = append(errs, validateAutoscaling(spec.Child("autoscaling"), pool)...)
 
 	// V10 (update only): never scale down blind. Shrinking a pool destroys cells,
 	// and we cannot drain what we cannot see.
@@ -196,6 +197,32 @@ func validateWorkloadCluster(p *field.Path, w cellsv1alpha1.WorkloadClusterSpec)
 	if w.KubeconfigSecretRef.Name == "" {
 		errs = append(errs, field.Required(p.Child("kubeconfigSecretRef", "name"),
 			"a credential for the workload cluster is required"))
+	}
+	return errs
+}
+
+// validateAutoscaling guards the one feature that can consume GPUs on its own.
+func validateAutoscaling(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.ErrorList {
+	var errs field.ErrorList
+	as := pool.Spec.Autoscaling
+	if as == nil || !as.Enabled {
+		return errs
+	}
+
+	// An unbounded pool that misreads demand can consume every GPU in the cluster.
+	if as.MaxReplicas == nil {
+		errs = append(errs, field.Required(p.Child("maxReplicas"),
+			"required when autoscaling is enabled: an unbounded pool can consume every GPU in the cluster"))
+	}
+	if as.MinReplicas != nil && as.MaxReplicas != nil && *as.MinReplicas > *as.MaxReplicas {
+		errs = append(errs, field.Invalid(p.Child("minReplicas"), *as.MinReplicas,
+			"must not exceed maxReplicas"))
+	}
+	// Shrinking on a heuristic is the one unrecoverable mistake here, so Auto is a
+	// separate phase rather than a flag that quietly does nothing.
+	if as.ScaleDown == cellsv1alpha1.ScaleDownAuto {
+		errs = append(errs, field.NotSupported(p.Child("scaleDown"),
+			as.ScaleDown, []string{cellsv1alpha1.ScaleDownManual}))
 	}
 	return errs
 }
