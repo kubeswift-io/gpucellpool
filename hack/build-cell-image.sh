@@ -77,16 +77,20 @@ write_files:
       # --- k0s containerd drop-in: nvidia runtime as default + CDI. HAMi needs
       #     the nvidia runtime to inject its interposition library.
       mkdir -p /etc/k0s/containerd.d
+      # containerd 2.x config, which is what k0s >= 1.34 ships. The v1 CRI plugin
+      # form ("version = 2" with io.containerd.grpc.v1.cri) is REJECTED by k0s at
+      # pre-flight -- "unsupported configuration version: expected 3, got 2" -- so
+      # the worker never starts and the cell never joins. Getting this wrong is
+      # silent from the outside: the VM boots, sshd runs, and nothing registers.
       cat > /etc/k0s/containerd.d/nvidia.toml <<'TOML'
-      version = 2
-      [plugins."io.containerd.grpc.v1.cri"]
+      [plugins."io.containerd.cri.v1.runtime"]
         enable_cdi = true
         cdi_spec_dirs = ["/etc/cdi", "/var/run/cdi"]
-      [plugins."io.containerd.grpc.v1.cri".containerd]
+      [plugins."io.containerd.cri.v1.runtime".containerd]
         default_runtime_name = "nvidia"
-      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia]
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia]
         runtime_type = "io.containerd.runc.v2"
-      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.nvidia.options]
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.nvidia.options]
         BinaryName = "/usr/bin/nvidia-container-runtime"
         SystemdCgroup = true
       TOML

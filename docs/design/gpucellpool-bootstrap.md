@@ -153,11 +153,29 @@ done
 [ -n "$NODE_IP" ] || { echo "no routable address after 60s"; exit 1; }
 ```
 
-This is the most likely explanation for a first attempt of ours that booted, ran
-sshd, and never joined, while an otherwise identical second attempt joined in
-seconds — but it was not proven, because that cell had no ssh key to interrogate.
-Either way the template should not race, and it should fail loudly rather than
-invoke the installer with an empty flag.
+Worth doing regardless, though it was NOT the cause of our own booted-but-never-
+joined cell — see the next item for what actually was.
+
+**Match the container runtime's config version.** k0s ≥ 1.34 ships containerd 2.x,
+which requires the v3 config schema. A drop-in written in the v1 CRI form
+(`version = 2` with `[plugins."io.containerd.grpc.v1.cri"]`) is rejected at
+pre-flight:
+
+```
+Rejected: unsupported configuration version: expected 3, got 2
+  property=/etc/k0s/containerd.d/nvidia.toml
+Error: pre-flight checks failed
+```
+
+The worker then never starts and the cell never joins. This is silent from the
+outside — the VM boots, sshd answers, both addresses come up, cloud-init reports
+success and even logs `EXIT=0`, because the join *script* completed; it was the
+service it installed that refused to start. Use
+`[plugins."io.containerd.cri.v1.runtime"]`. Our first baked image had the v1 form
+and cost two cell rebuilds to find, which is the strongest argument in this document
+for giving every cell an ssh key.
+
+**A baked image needs an ssh key in the template.**
 
 **A baked image needs an ssh key in the template.** The bake resets cloud-init,
 machine-id and host keys, so the only way into a cell is a key the join cloud-init
