@@ -53,12 +53,22 @@ another pool) is unaffected and uncounted.
 Node <cell>
   labels:       gpu=on                      # HAMi's scheduling gate
   annotations:  hami.io/node-nvidia-register: |
-    [{"id":"GPU-00552014-…","count":10,"devmem":8192,"devcore":100,
-      "type":"NVIDIA-GeForce-GTX-1080","numa":0,"health":true}]
+    [{"id":"GPU-e71afe85-9309-864a-477e-91caa89f3932","count":10,"devmem":8192,
+      "devcore":100,"type":"NVIDIA GeForce GTX 1080","mode":"hami-core",
+      "health":true,"devicepairscore":{}}]
 ```
 
 Per GPU: `id` (UUID), `count` (**inflated** logical slots — `deviceSplitCount`,
-default 10), `devmem` (MiB), `devcore` (percent), `type` (model), `numa`, `health`.
+default 10), `devmem` (MiB), `devcore` (percent), `type` (model, **with spaces** —
+do not assume a hyphenated form), `mode` (`hami-core`), `health`, and
+`devicepairscore`. The above is a **verbatim capture from the Phase-1 cell**
+(2026-08-07, HAMi 2.x, GTX 1080).
+
+Two parser consequences, both learned from that capture rather than from the docs:
+`numa` — which older documentation shows — was **absent**, and `mode` /
+`devicepairscore` are present and undocumented. So the parser must tolerate missing
+*and* unknown fields, and treat only `id`, `devmem`, `devcore` and `health` as
+required. Anything stricter breaks on a HAMi upgrade.
 
 Three parsing rules, all load-bearing:
 
@@ -80,10 +90,14 @@ Three parsing rules, all load-bearing:
 HAMi's scheduler↔device-plugin protocol lives on the **Pod**:
 
 ```
-hami.io/vgpu-devices-allocated    devices actually bound (UUID, vendor, memory MiB, core %)
-hami.io/vgpu-devices-to-allocate  in flight; emptied when binding completes
-hami.io/bind-time                 scheduling timestamp (timeout detection)
+hami.io/vgpu-devices-allocated    GPU-<uuid>,NVIDIA,<memMiB>,<cores>:;   (one record per device)
+hami.io/vgpu-devices-to-allocate  ";;" once binding completed; non-empty while in flight
+hami.io/bind-time                 unix seconds, e.g. "1786087583" (timeout detection)
 ```
+
+Measured on the Phase-1 cell: two pods, each limited to 3000 MiB / 30%, both carried
+`vgpu-devices-allocated` naming the **same** UUID — which is the whole architecture in
+one field, and the assertion the capacity tests should encode.
 
 Accounting per cell node:
 
@@ -101,8 +115,14 @@ annotation and record `gpucell_capacity_scrape_errors_total{reason="annotation_r
 — disagreement is a signal about HAMi's state, not a value to average.
 
 Terminal pods (`Succeeded`/`Failed`) are excluded; in-flight
-(`-to-allocate` non-empty) is **included**, because a drain that ignored in-flight
-allocations would race the scheduler.
+(`-to-allocate` non-empty, i.e. not `";;"`) is **included**, because a drain that
+ignored in-flight allocations would race the scheduler.
+
+Note that a request larger than the device is refused by HAMi's **scheduler**, not at
+runtime: 9000 MiB against an 8192 MiB card left the pod Pending with
+`NodeUnfitPod` (measured). So over-capacity demand shows up as unschedulable pods —
+which is exactly the Phase-3 scale-up signal, and exactly why that signal must be
+filtered against "would a fresh cell of this shape actually satisfy it" (§8).
 
 ---
 
