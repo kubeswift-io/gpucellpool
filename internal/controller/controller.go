@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -23,6 +24,7 @@ import (
 	"github.com/kubeswift-io/gpucellpool/internal/capacity"
 	"github.com/kubeswift-io/gpucellpool/internal/cellid"
 	"github.com/kubeswift-io/gpucellpool/internal/inventory"
+	poolmetrics "github.com/kubeswift-io/gpucellpool/internal/metrics"
 	"github.com/kubeswift-io/gpucellpool/internal/provisioner"
 	"github.com/kubeswift-io/gpucellpool/internal/workload"
 )
@@ -121,6 +123,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		if c, cErr := provider.Capacity(ctx, nodes); cErr != nil {
 			log.V(1).Info("capacity unreadable; retaining the last known values", "err", cErr.Error())
+			poolmetrics.CapacityScrapeErrorsTotal.WithLabelValues(pool.Name, pool.Namespace, "capacity").Inc()
 		} else {
 			cap0, capacityKnown = c, true
 		}
@@ -130,11 +133,15 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			// satisfiability, and the scaler then refuses to act.
 			if d, dErr := provider.PendingDemand(ctx, ReferenceDevice(cap0)); dErr != nil {
 				log.V(1).Info("GPU demand unreadable; not scaling", "err", dErr.Error())
+				poolmetrics.CapacityScrapeErrorsTotal.WithLabelValues(pool.Name, pool.Namespace, "demand").Inc()
 			} else {
 				demand, demandKnown = d, true
 			}
 		}
 	}
+
+	poolmetrics.WorkloadClusterReachable.WithLabelValues(pool.Name, pool.Namespace).
+		Set(boolGauge(reachable))
 
 	scale := DecideScale(ScaleInput{
 		Replicas:    pool.Spec.Replicas,
@@ -146,6 +153,10 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		Now:         r.now(),
 		LastScaleUp: pool.Status.LastScaleUpTime,
 	})
+	if autoscalingEnabled(&pool) {
+		poolmetrics.ScaleDecisionsTotal.WithLabelValues(
+			pool.Name, pool.Namespace, scale.Reason, strconv.FormatBool(scale.ScaledUp)).Inc()
+	}
 	if scale.ScaledUp {
 		nowT := metav1.NewTime(r.now())
 		pool.Status.LastScaleUpTime = &nowT
@@ -305,7 +316,7 @@ func (r *GPUCellPoolReconciler) discoverCells(
 				fmt.Sprintf("removed a workload Node left by a previous incarnation of cell %s", name))
 		}
 
-		out = append(out, r.cellStatus(prev, name, idx, outer, obs, dec))
+		out = append(out, r.cellStatus(prev, pool.Name, pool.Namespace, name, idx, outer, obs, dec))
 	}
 
 	// Carry forward a row for a failed cell whose guest we have already deleted.
@@ -337,7 +348,7 @@ func (r *GPUCellPoolReconciler) discoverCells(
 // cellStatus folds a decision into the cell's status row, carrying the failure
 // count and transition time forward.
 func (r *GPUCellPoolReconciler) cellStatus(
-	prev cellsv1alpha1.CellStatus, name string, idx int32,
+	prev cellsv1alpha1.CellStatus, pool, namespace, name string, idx int32,
 	outer provisioner.OuterState, obs Observation, dec Decision,
 ) cellsv1alpha1.CellStatus {
 	c := cellsv1alpha1.CellStatus{
@@ -362,6 +373,21 @@ func (r *GPUCellPoolReconciler) cellStatus(
 		if dec.Phase == cellsv1alpha1.CellPhaseFailed && prev.Phase != cellsv1alpha1.CellPhaseFailed {
 			c.FailureCount = prev.FailureCount + 1
 		}
+		if prev.Phase != "" {
+			poolmetrics.CellTransitionsTotal.WithLabelValues(
+				pool, namespace, string(prev.Phase), string(dec.Phase)).Inc()
+		}
+		// Startup is measured from the guest's creation, not from the first phase
+		// we happened to observe, and only on the FIRST time a cell reaches Ready
+		// (a later Ready after a regression is not a startup).
+		if dec.Phase == cellsv1alpha1.CellPhaseReady && prev.Phase != cellsv1alpha1.CellPhaseReady &&
+			outer.CreatedAt != nil && !outer.CreatedAt.IsZero() && prev.ReadyOnce == false {
+			poolmetrics.CellStartupSeconds.WithLabelValues(pool, namespace).
+				Observe(r.now().Sub(outer.CreatedAt.Time).Seconds())
+		}
+	}
+	if dec.Phase == cellsv1alpha1.CellPhaseReady {
+		c.ReadyOnce = true
 	}
 	return c
 }
@@ -544,6 +570,7 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 		}
 	}
 	r.Clients.Forget(clientKey(pool))
+	poolmetrics.ForgetPool(pool.Namespace, pool.Name)
 	return ctrl.Result{}, nil
 }
 
@@ -601,6 +628,8 @@ func (r *GPUCellPoolReconciler) writeStatus(
 			waiting++
 		}
 	}
+
+	r.publishMetrics(pool, cells, scale, freeGPUs, cap0, capacityKnown)
 
 	pool.Status.Conditions = ApplyConditions(pool.Status.Conditions, ComputeConditions(ConditionInput{
 		Generation:         pool.Generation,

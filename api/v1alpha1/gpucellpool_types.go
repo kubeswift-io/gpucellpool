@@ -470,6 +470,11 @@ type CellStatus struct {
 	// +optional
 	FailureCount int32 `json:"failureCount,omitempty"`
 
+	// ReadyOnce records that this cell reached Ready at least once, so a later
+	// Ready after a regression is not mistaken for a startup.
+	// +optional
+	ReadyOnce bool `json:"readyOnce,omitempty"`
+
 	// LastTransitionTime is when Phase last changed.
 	// +optional
 	LastTransitionTime *metav1.Time `json:"lastTransitionTime,omitempty"`

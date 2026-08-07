@@ -39,6 +39,19 @@ All notable changes to this project are documented here. The format follows
   reached. `status.demand`, `status.desiredReplicas`, `status.lastScaleUpTime` and
   the `ScalingActive` condition report every decision and its reason.
 
+### Added — metrics
+
+- `gpucell_*` Prometheus metrics, with the two layers deliberately kept apart:
+  `physical_gpus{held,free}` counts whole devices from the infrastructure cluster,
+  `capacity_gpu_*` reports fractional capacity from the workload cluster. An alert
+  can therefore tell "no GPU left in the cluster" from "the shared GPU is full".
+- `cell_startup_seconds` measures creation to first Ready — the number that decides
+  whether autoscaling can be reactive at all.
+- `cell_transitions_total` makes an oscillating cell visible even though its
+  instantaneous phase looks healthy; `capacity_scrape_errors_total` says the gauges
+  went stale, since a failed read retains the previous values rather than zeroing;
+  `scale_decisions_total` records refusals as well as scale-ups.
+
 ### Fixed (from the first live run)
 
 - `cell.nodeIPFrom` is an observation field, not a readiness gate. KubeSwift

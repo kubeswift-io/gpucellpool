@@ -116,6 +116,10 @@ type OuterState struct {
 	// which address a Node registered with, never to gate progress.
 	RoutableAddress string
 
+	// CreatedAt is when the outer object was created, which is the only honest
+	// start point for a startup measurement.
+	CreatedAt *metav1.Time
+
 	// UID is the outer object's UID — the cell's instance anchor, used to spot a
 	// workload Node left behind by a previous incarnation.
 	UID string

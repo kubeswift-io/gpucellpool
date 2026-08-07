@@ -163,6 +163,10 @@ func (p *SwiftGuestProvisioner) ensureGuest(ctx context.Context, req CellRequest
 // part of the KubeSwift status contract; nothing is inferred.
 func observe(guest *unstructured.Unstructured, nodeIPFrom string) OuterState {
 	st := OuterState{Exists: true, UID: string(guest.GetUID())}
+	if ts := guest.GetCreationTimestamp(); !ts.IsZero() {
+		created := ts
+		st.CreatedAt = &created
+	}
 
 	st.Phase, _, _ = unstructured.NestedString(guest.Object, "status", "phase")
 	st.HostNode, _, _ = unstructured.NestedString(guest.Object, "status", "gpu", "nodeName")

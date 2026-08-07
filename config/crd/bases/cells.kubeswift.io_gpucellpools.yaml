@@ -533,6 +533,11 @@ spec:
                       - Deleting
                       - Failed
                       type: string
+                    readyOnce:
+                      description: |-
+                        ReadyOnce records that this cell reached Ready at least once, so a later
+                        Ready after a regression is not mistaken for a startup.
+                      type: boolean
                   required:
                   - index
                   - name
