@@ -139,6 +139,26 @@ YAML-checked before substitution (the rendered output is fine, because the token
 are gone by then). Write `hostname: "{{ cellName }}"` and the template validates
 both before and after.
 
+**Wait for the routable address before joining.** A thin template that derives its
+node IP straight from `runcmd` races the secondary NIC's DHCP. If the address is not
+up yet, `NODE_IP` comes out empty and `k0s install worker --node-ip=` (or the
+kubeadm equivalent) fails — with the output going nowhere, because the serial
+console is not captured. Loop until the address appears:
+
+```bash
+for i in $(seq 1 30); do
+  NODE_IP=$(ip -4 -o addr show | awk '/10\.77\.0\./ {split($4,a,"/"); print a[1]; exit}')
+  [ -n "$NODE_IP" ] && break || sleep 2
+done
+[ -n "$NODE_IP" ] || { echo "no routable address after 60s"; exit 1; }
+```
+
+This is the most likely explanation for a first attempt of ours that booted, ran
+sshd, and never joined, while an otherwise identical second attempt joined in
+seconds — but it was not proven, because that cell had no ssh key to interrogate.
+Either way the template should not race, and it should fail loudly rather than
+invoke the installer with an empty flag.
+
 **A baked image needs an ssh key in the template.** The bake resets cloud-init,
 machine-id and host keys, so the only way into a cell is a key the join cloud-init
 installs — and KubeSwift's Cloud Hypervisor drops the serial console when no client
