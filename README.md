@@ -94,6 +94,7 @@ privileged in the infrastructure cluster.
 | [capacity](docs/design/gpucellpool-capacity.md) | how HAMi capacity is read |
 | [failure-model](docs/design/gpucellpool-failure-model.md) | what breaks and what the operator does about it |
 | [poc](docs/design/gpucellpool-poc.md) | hardware proof and test strategy |
+| [runbook](docs/runbook.md) | what to check when a pool misbehaves |
 
 ## Licence
 
