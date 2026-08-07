@@ -1,0 +1,759 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.2
+  name: gpucellpools.cells.kubeswift.io
+spec:
+  group: cells.kubeswift.io
+  names:
+    kind: GPUCellPool
+    listKind: GPUCellPoolList
+    plural: gpucellpools
+    shortNames:
+    - cellpool
+    singular: gpucellpool
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.replicas
+      name: Desired
+      type: integer
+    - jsonPath: .status.readyCells
+      name: Ready
+      type: integer
+    - jsonPath: .status.physicalCapacity.gpus
+      name: GPUs
+      type: integer
+    - jsonPath: .status.workloadCapacity.gpuMemory.available
+      name: GPUMemFree
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Available
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: GPUCellPool is a pool of VM-isolated, fractionally-shared GPU
+          worker nodes.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              GPUCellPoolSpec is the desired state of a pool of GPU cells.
+
+              A cell is one KubeSwift SwiftGuest VM holding one whole passthrough GPU, joined
+              to a workload Kubernetes cluster as a node whose GPU HAMi shares. The spec is
+              split deliberately: spec.cell is the SHAPE of one cell, spec.replicas is POOL
+              POLICY. They never mix (design principle 9.3).
+            properties:
+              bootstrap:
+                description: Bootstrap describes how a cell becomes a worker of the
+                  workload cluster.
+                properties:
+                  hostname:
+                    default: CellName
+                    description: |-
+                      Hostname controls the guest hostname. CellName (default) makes the guest
+                      hostname, and therefore the workload Node name, equal to the cell name —
+                      which is how cells are correlated across the two clusters.
+                    enum:
+                    - CellName
+                    - None
+                    type: string
+                  joinSecretKey:
+                    default: user-data
+                    description: JoinSecretKey is the key inside JoinSecretRef holding
+                      the user-data.
+                    type: string
+                  joinSecretRef:
+                    description: |-
+                      JoinSecretRef holds the cloud-init user-data that joins the workload
+                      cluster, under key "user-data" unless JoinSecretKey says otherwise.
+                      Required for the Opaque provider.
+
+                      The credential is only ever referenced: the controller renders a per-cell
+                      Secret and points the SwiftSeedProfile at it, so no token is written into
+                      any custom resource.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  provider:
+                    default: Opaque
+                    description: Provider selects the join-credential mechanism.
+                    enum:
+                    - Opaque
+                    - KubeadmToken
+                    type: string
+                  readyTimeout:
+                    default: 15m
+                    description: |-
+                      ReadyTimeout bounds Booting+Joining. A cell that has not produced a Ready
+                      workload Node within it is marked Failed with a reason, never left silent.
+                    type: string
+                type: object
+              capacity:
+                description: Capacity selects and configures the inner capacity provider
+                  (HAMi).
+                properties:
+                  hami:
+                    description: HAMi configures the HAMi provider.
+                    properties:
+                      deviceClassName:
+                        description: |-
+                          DeviceClassName is the HAMi DeviceClass whose ResourceSlices carry the
+                          cells' capacity. Required in DRA mode.
+                        type: string
+                      expectedDevicesPerCell:
+                        description: |-
+                          ExpectedDevicesPerCell is how many GPU devices HAMi must advertise on a
+                          cell's Node before that cell counts as Ready. Defaults to cell.gpu.count.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      mode:
+                        default: DevicePlugin
+                        description: Mode selects which HAMi accounting model to read.
+                        enum:
+                        - DevicePlugin
+                        - DRA
+                        type: string
+                    type: object
+                  provider:
+                    default: HAMi
+                    description: Provider is the inner GPU capacity provider.
+                    enum:
+                    - HAMi
+                    type: string
+                  readyTimeout:
+                    default: 5m
+                    description: |-
+                      ReadyTimeout bounds how long a joined Node may go without advertising the
+                      expected GPU before the cell is marked Failed.
+                    type: string
+                type: object
+              cell:
+                description: 'Cell describes one cell: the VM shape and its GPU.'
+                properties:
+                  gpu:
+                    description: GPU is the cell's physical GPU request.
+                    properties:
+                      backend:
+                        default: DRA
+                        description: Backend selects the KubeSwift GPU allocation
+                          backend.
+                        enum:
+                        - DRA
+                        - Native
+                        type: string
+                      count:
+                        default: 1
+                        description: |-
+                          Count is the number of whole GPUs per cell. Only 1 is supported in
+                          v1alpha1; multi-GPU cells need NVLink/topology work.
+                        enum:
+                        - 1
+                        format: int32
+                        type: integer
+                      dra:
+                        description: DRA configures the DRA backend. Required when
+                          backend is DRA.
+                        properties:
+                          hugepages:
+                            description: Hugepages sizes the GPU memory hugepage backing
+                              ("1Gi", "2Mi", or empty).
+                            enum:
+                            - ""
+                            - 1Gi
+                            - 2Mi
+                            type: string
+                          requestName:
+                            default: gpu
+                            description: |-
+                              RequestName is the device-request name inside the claim to read the
+                              allocation result back from.
+                            type: string
+                          resourceClaimName:
+                            description: |-
+                              ResourceClaimName references one pre-created, shared ResourceClaim. A
+                              VFIO device can back only ONE running VM, so this is only correct for a
+                              single-cell pool.
+                            type: string
+                          resourceClaimTemplateName:
+                            description: ResourceClaimTemplateName mints a per-cell
+                              ResourceClaim. Recommended.
+                            type: string
+                          tier:
+                            default: pcie
+                            description: |-
+                              Tier selects hypervisor and firmware in KubeSwift. Only pcie (Cloud
+                              Hypervisor) is supported for cells: hgx-shared needs QEMU plus a host
+                              Fabric Manager, and hgx-full is rejected by KubeSwift at allocation.
+                            enum:
+                            - pcie
+                            type: string
+                        type: object
+                      native:
+                        description: |-
+                          Native configures the native SwiftGPU backend. Required when backend is
+                          Native.
+                        properties:
+                          gpuProfileRef:
+                            description: GPUProfileRef references a SwiftGPUProfile
+                              in the pool's namespace.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - gpuProfileRef
+                        type: object
+                    type: object
+                  guestTemplate:
+                    description: |-
+                      GuestTemplate is a verbatim KubeSwift SwiftGuestSpec, passed through
+                      unmodified apart from the fields this operator owns. It is opaque on
+                      purpose: mirroring KubeSwift's API surface here would guarantee drift, and
+                      every KubeSwift VM feature (storage, interfaces, data disks, topology
+                      spread) is available for free.
+
+                      Operator-owned fields (rejected if set here; written by the controller):
+                      seedProfileRef, gpuProfileRef, gpuResourceClaim, nodeName, migration,
+                      runPolicy.
+
+                      Denied fields (incompatible with a GPU cell): kernelRef,
+                      cloneFromSnapshot, osType: windows, vhostUserDevices, filesystems.
+
+                      guestClassRef and imageRef are required — a GPU cell is a disk boot.
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                  nodeIPFrom:
+                    description: |-
+                      NodeIPFrom names the guestTemplate interface whose address the kubelet
+                      registers as --node-ip. Empty means the primary interface.
+
+                      A cell almost always needs a ROUTABLE interface here, not KubeSwift's
+                      node-local nat primary: the workload apiserver must be able to dial the
+                      kubelet for logs, exec, port-forward and metrics.
+                    type: string
+                  provisioner:
+                    default: SwiftGuest
+                    description: |-
+                      Provisioner creates the outer objects for a cell.
+                        SwiftGuest: create a KubeSwift SwiftGuest directly (the only mode today).
+                        ClusterAPI: size a MachineDeployment (later phase; requires a CAPI-managed
+                                    workload cluster, so it is an additional mode, never a
+                                    replacement).
+                    enum:
+                    - SwiftGuest
+                    - ClusterAPI
+                    type: string
+                  spreadPolicy:
+                    default: Spread
+                    description: |-
+                      SpreadPolicy is shorthand for hostname topology spread of the cell VMs
+                      across outer nodes. Spread is the default: two cells on one host share a
+                      failure domain and, usually, a NUMA/PCIe path.
+                    enum:
+                    - Pack
+                    - Spread
+                    type: string
+                required:
+                - gpu
+                - guestTemplate
+                type: object
+              deletion:
+                description: Deletion controls teardown behaviour for the pool.
+                properties:
+                  drainTimeout:
+                    default: 10m
+                    description: |-
+                      DrainTimeout bounds draining during EXPLICIT pool deletion, after which
+                      teardown proceeds anyway (leaving VMs and GPUs pinned forever after a
+                      delete request is worse). Implicit scale-down never forces.
+                    type: string
+                  policy:
+                    default: Drain
+                    description: Policy controls whether cells are drained before
+                      deletion.
+                    enum:
+                    - Drain
+                    - Force
+                    type: string
+                type: object
+              replicas:
+                default: 1
+                description: |-
+                  Replicas is the desired number of cells. Scaled via the scale subresource,
+                  so `kubectl scale` and an HPA both work. Autoscaling (min/max, demand
+                  signals) is a later phase and will arrive as a separate `autoscaling` block
+                  rather than by changing this field.
+                format: int32
+                minimum: 0
+                type: integer
+              workloadCluster:
+                description: WorkloadCluster is the cluster the cells join and where
+                  HAMi runs.
+                properties:
+                  key:
+                    default: value
+                    description: Key is the Secret key holding the kubeconfig.
+                    type: string
+                  kubeconfigSecretRef:
+                    description: |-
+                      KubeconfigSecretRef references a Secret in the pool's namespace holding a
+                      kubeconfig for the workload cluster. Scope the credential: see
+                      docs/design/gpucellpool-reconciliation.md for the minimum RBAC.
+                    properties:
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  node:
+                    description: |-
+                      Node describes labels, annotations and taints applied to each cell's
+                      workload Node.
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        description: Annotations are applied to the cell's Node.
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Labels are applied to the cell's Node. The capacity provider's own gate
+                          (for HAMi: gpu=on) is declared HERE, by the user: this operator applies
+                          labels it does not interpret.
+                        type: object
+                      taints:
+                        description: |-
+                          Taints are applied to the cell's Node. Note that the capacity provider's
+                          own DaemonSets must tolerate them or the GPU is never advertised.
+                        items:
+                          description: |-
+                            The node this Taint is attached to has the "effect" on
+                            any pod that does not tolerate the Taint.
+                          properties:
+                            effect:
+                              description: |-
+                                Required. The effect of the taint on pods
+                                that do not tolerate the taint.
+                                Valid effects are NoSchedule, PreferNoSchedule and NoExecute.
+                              type: string
+                            key:
+                              description: Required. The taint key to be applied to
+                                a node.
+                              type: string
+                            timeAdded:
+                              description: TimeAdded represents the time at which
+                                the taint was added.
+                              format: date-time
+                              type: string
+                            value:
+                              description: The taint value corresponding to the taint
+                                key.
+                              type: string
+                          required:
+                          - effect
+                          - key
+                          type: object
+                        type: array
+                    type: object
+                required:
+                - kubeconfigSecretRef
+                type: object
+            required:
+            - bootstrap
+            - cell
+            - replicas
+            - workloadCluster
+            type: object
+          status:
+            description: GPUCellPoolStatus is the observed state of a GPUCellPool.
+            properties:
+              cells:
+                description: |-
+                  Cells is per-cell state, one entry per owned cell. It is a projection of
+                  live cluster objects, so it is fully recoverable after a restart.
+                items:
+                  description: CellStatus is the observed state of one cell, spanning
+                    both clusters.
+                  properties:
+                    capacityDevices:
+                      description: |-
+                        CapacityDevices is how many GPU devices the capacity provider advertises
+                        on this cell's Node.
+                      format: int32
+                      type: integer
+                    devices:
+                      description: Devices are the PCI addresses passed into the cell
+                        VM.
+                      items:
+                        type: string
+                      type: array
+                    failureCount:
+                      description: |-
+                        FailureCount is how many times this index has failed; it drives the
+                        replacement backoff and the exhaustion guard.
+                      format: int32
+                      type: integer
+                    guestUID:
+                      description: |-
+                        GuestUID is the outer guest's UID. It distinguishes this incarnation of
+                        the cell from a previous one, which is how a stale workload Node left by
+                        a replaced cell is detected instead of being adopted.
+                      type: string
+                    hostNode:
+                      description: HostNode is the outer Kubernetes node whose physical
+                        GPU this cell holds.
+                      type: string
+                    index:
+                      description: Index is the cell's stable ordinal within the pool.
+                      format: int32
+                      type: integer
+                    lastTransitionTime:
+                      description: LastTransitionTime is when Phase last changed.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Message explains a non-Ready phase in operator-actionable
+                        terms.
+                      type: string
+                    name:
+                      description: |-
+                        Name is the cell name: <pool>-<index>. It is also the SwiftGuest name,
+                        the guest hostname and the workload Node name.
+                      type: string
+                    nodeName:
+                      description: NodeName is the cell's workload Node (equal to
+                        Name once it registers).
+                      type: string
+                    nodeReady:
+                      description: NodeReady reports the workload Node's Ready condition.
+                      type: boolean
+                    phase:
+                      description: Phase is the cell's state (see CellPhase).
+                      enum:
+                      - Pending
+                      - AllocatingGPU
+                      - GuestProvisioning
+                      - Booting
+                      - Joining
+                      - AwaitingGPUCapacity
+                      - Ready
+                      - Draining
+                      - Deleting
+                      - Failed
+                      type: string
+                  required:
+                  - index
+                  - name
+                  - phase
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              conditions:
+                description: |-
+                  Conditions separate the layers on purpose, so a single False localises the
+                  fault: see the Condition* constants.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              creatingCells:
+                format: int32
+                type: integer
+              drainingCells:
+                format: int32
+                type: integer
+              failedCells:
+                format: int32
+                type: integer
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation this status
+                  reflects.
+                format: int64
+                type: integer
+              physicalCapacity:
+                description: PhysicalCapacity is outer capacity (whole GPUs).
+                properties:
+                  freeGPUsInCluster:
+                    description: |-
+                      FreeGPUsInCluster is how many further devices the pool could claim, from
+                      the outer inventory. Nil means unknown (never report unknown as zero).
+                    format: int32
+                    type: integer
+                  gpus:
+                    description: GPUs is the number of physical GPUs this pool's cells
+                      hold.
+                    format: int32
+                    type: integer
+                  model:
+                    description: |-
+                      Model is the GPU model the pool holds, as reported by the outer
+                      inventory.
+                    type: string
+                required:
+                - gpus
+                type: object
+              readyCells:
+                description: ReadyCells is the number of cells where both layers agree.
+                format: int32
+                type: integer
+              replicas:
+                description: Replicas is the number of cells the pool owns (scale
+                  subresource).
+                format: int32
+                type: integer
+              workloadCapacity:
+                description: WorkloadCapacity is inner capacity (HAMi fractions).
+                properties:
+                  byModel:
+                    description: ByModel is per-model capacity and is always populated.
+                    items:
+                      description: ModelCapacity is per-GPU-model capacity within
+                        the pool.
+                      properties:
+                        compute:
+                          description: |-
+                            ComputeCapacity is total/allocated/available GPU compute, in percent of a
+                            device (HAMi's unit). Percentages of DIFFERENT GPU models are not
+                            commensurable, so pool-wide aggregates are only published for a homogeneous
+                            pool; ByModel is always authoritative.
+                          properties:
+                            allocated:
+                              format: int32
+                              type: integer
+                            available:
+                              format: int32
+                              type: integer
+                            total:
+                              format: int32
+                              type: integer
+                          required:
+                          - allocated
+                          - available
+                          - total
+                          type: object
+                        devices:
+                          format: int32
+                          type: integer
+                        memory:
+                          description: MemoryCapacity is total/allocated/available
+                            GPU memory.
+                          properties:
+                            allocated:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            available:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                            total:
+                              anyOf:
+                              - type: integer
+                              - type: string
+                              pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                              x-kubernetes-int-or-string: true
+                          required:
+                          - allocated
+                          - available
+                          - total
+                          type: object
+                        model:
+                          type: string
+                      required:
+                      - devices
+                      - model
+                      type: object
+                    type: array
+                  gpuCompute:
+                    description: |-
+                      GPUCompute is pool-wide GPU compute in percent. Only published while
+                      Homogeneous is true.
+                    properties:
+                      allocated:
+                        format: int32
+                        type: integer
+                      available:
+                        format: int32
+                        type: integer
+                      total:
+                        format: int32
+                        type: integer
+                    required:
+                    - allocated
+                    - available
+                    - total
+                    type: object
+                  gpuDevices:
+                    description: |-
+                      GPUDevices is the number of GPU devices the provider advertises across
+                      the pool's ready cells.
+                    format: int32
+                    type: integer
+                  gpuMemory:
+                    description: |-
+                      GPUMemory is pool-wide GPU memory. Always valid: bytes are comparable
+                      across models.
+                    properties:
+                      allocated:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      available:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                      total:
+                        anyOf:
+                        - type: integer
+                        - type: string
+                        pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                        x-kubernetes-int-or-string: true
+                    required:
+                    - allocated
+                    - available
+                    - total
+                    type: object
+                  homogeneous:
+                    description: |-
+                      Homogeneous is true when every advertised device is the same model. When
+                      false, the pool-wide Compute aggregate is omitted (see ComputeCapacity).
+                    type: boolean
+                  lastObserved:
+                    description: |-
+                      LastObserved is when these numbers were last computed successfully. A
+                      failed read retains the previous values and this timestamp rather than
+                      reporting zero.
+                    format: date-time
+                    type: string
+                  mode:
+                    type: string
+                  provider:
+                    description: Provider and Mode record which accounting model produced
+                      these numbers.
+                    type: string
+                type: object
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
+      status: {}

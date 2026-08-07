@@ -1,0 +1,26 @@
+# Binaries / build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+cover.out
+vendor/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# AI tooling — LOCAL ONLY, never published
+.claude/
+.cursor/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+
+# Local scratch
+/spike/
+/field-testing/
+/docs/design/*local*.md

@@ -1,0 +1,80 @@
+# A pool of two GPU cells: two KubeSwift VMs, each holding one whole passthrough
+# GPU, each joining the "inference" workload cluster as a node whose GPU HAMi
+# shares between workloads.
+#
+# Prerequisites in the INFRASTRUCTURE cluster:
+#   - KubeSwift >= v0.13.4, a node labelled kubeswift.io/gpu-node=true
+#   - a DeviceClass for VFIO GPUs + the ResourceClaimTemplate referenced below
+#     (see KubeSwift config/samples/dra-gpu/)
+#   - a SwiftGuestClass and a SwiftImage for the cell VM
+# Prerequisites in the WORKLOAD cluster:
+#   - HAMi installed, and its DaemonSets tolerating the taints below
+#   - the cells must be reachable from the apiserver (routable interface, not
+#     just egress) — see cell.nodeIPFrom
+apiVersion: cells.kubeswift.io/v1alpha1
+kind: GPUCellPool
+metadata:
+  name: inference
+  namespace: gpu-cells
+spec:
+  replicas: 2
+
+  cell:
+    # A verbatim KubeSwift SwiftGuestSpec. The operator owns seedProfileRef,
+    # gpuResourceClaim/gpuProfileRef, nodeName, migration and runPolicy — setting
+    # them here is rejected.
+    guestTemplate:
+      guestClassRef: {name: gpu-worker-32c-128g}
+      imageRef: {name: gpu-worker-noble-570}
+      storage:
+        storageClassName: longhorn-r1
+        accessMode: ReadWriteOnce
+      interfaces:
+        - name: mgmt
+          primary: true
+        - name: node
+          networkRef:
+            kind: NetworkAttachmentDefinition
+            name: cell-net
+
+    # The kubelet registers the address of this interface as --node-ip, so the
+    # workload apiserver can reach it for logs/exec/metrics.
+    nodeIPFrom: node
+
+    gpu:
+      count: 1
+      backend: DRA
+      dra:
+        resourceClaimTemplateName: single-vfio-gpu
+        tier: pcie
+        hugepages: "1Gi"
+
+    spreadPolicy: Spread
+
+  bootstrap:
+    provider: Opaque
+    # Cloud-init that joins YOUR cluster. Never inlined into this object.
+    joinSecretRef: {name: inference-cluster-join}
+    readyTimeout: 15m
+
+  workloadCluster:
+    kubeconfigSecretRef: {name: inference-cluster-kubeconfig}
+    node:
+      labels:
+        # HAMi's own scheduling gate. Declared here by you; the operator applies
+        # labels it does not interpret.
+        gpu: "on"
+      taints:
+        - key: cells.kubeswift.io/dedicated
+          value: inference
+          effect: NoSchedule
+
+  capacity:
+    provider: HAMi
+    hami:
+      mode: DevicePlugin
+      expectedDevicesPerCell: 1
+
+  deletion:
+    policy: Drain
+    drainTimeout: 10m

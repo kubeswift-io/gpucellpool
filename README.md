@@ -1,0 +1,81 @@
+# gpucellpool
+
+A Kubernetes operator that turns physical GPUs into pools of **VM-isolated,
+fractionally-shared GPU worker nodes**.
+
+It composes two projects and modifies neither:
+
+- **[KubeSwift](https://github.com/kubeswift-io/kubeswift)** runs the VM and passes a
+  whole physical GPU into it (VFIO).
+- **[HAMi](https://github.com/Project-HAMi/HAMi)** shares that GPU between workloads
+  inside the VM's Kubernetes cluster.
+
+```
+physical GPU ──VFIO──► SwiftGuest VM ──joins──► workload cluster node
+                                                     │
+                                                   HAMi
+                                          ┌──────────┼──────────┐
+                                       pod A      pod B      pod C
+                                       4Gi/30%   8Gi/50%    2Gi/20%
+```
+
+One `GPUCellPool` declares N such cells. KubeSwift owns the physical GPU → VM
+boundary; HAMi owns GPU → workload allocation; this operator owns the lifecycle
+between them. A HAMi fraction is never handed to VFIO — the two layers nest, they
+do not translate.
+
+## Status
+
+**Pre-alpha.** The design is complete (`docs/design/`), the API types are in place,
+and the controller is not implemented yet. The hardware proof (Phase 1 in
+`docs/design/gpucellpool-poc.md`) is the gate on everything else.
+
+## Example
+
+```yaml
+apiVersion: cells.kubeswift.io/v1alpha1
+kind: GPUCellPool
+metadata:
+  name: inference
+spec:
+  replicas: 2
+  cell:
+    guestTemplate:                        # a verbatim KubeSwift SwiftGuestSpec
+      guestClassRef: {name: gpu-worker-32c-128g}
+      imageRef:      {name: gpu-worker-noble-570}
+    gpu:
+      backend: DRA
+      dra:
+        resourceClaimTemplateName: single-vfio-gpu
+  bootstrap:
+    joinSecretRef: {name: inference-cluster-join}
+  workloadCluster:
+    kubeconfigSecretRef: {name: inference-cluster-kubeconfig}
+    node:
+      labels: {gpu: "on"}                 # HAMi's own gate, declared by you
+```
+
+## Requirements
+
+| | |
+|---|---|
+| infrastructure cluster | KubeSwift ≥ v0.13.4, a GPU node (`kubeswift.io/gpu-node=true`), a `DeviceClass` for VFIO GPUs |
+| workload cluster | HAMi installed, reachable from the operator, and reachable **both ways** for kubelet (cells need a routable interface, not just egress) |
+| cell image | a `SwiftImage` with the NVIDIA driver, containerd + CDI, and your distribution's node binaries |
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [overview](docs/design/gpucellpool-overview.md) | architecture, decisions, scope, phases |
+| [api](docs/design/gpucellpool-api.md) | the v1alpha1 CRD and its validation rules |
+| [reconciliation](docs/design/gpucellpool-reconciliation.md) | cell state machine, identity, RBAC, deletion |
+| [bootstrap](docs/design/gpucellpool-bootstrap.md) | cell image strategy, join credentials |
+| [capacity](docs/design/gpucellpool-capacity.md) | how HAMi capacity is read |
+| [failure-model](docs/design/gpucellpool-failure-model.md) | what breaks and what the operator does about it |
+| [poc](docs/design/gpucellpool-poc.md) | hardware proof and test strategy |
+
+## Licence
+
+Apache-2.0. KubeSwift is AGPL-3.0 and is reached only through the Kubernetes API
+with unstructured clients — no KubeSwift Go package is imported. See `NOTICE`.

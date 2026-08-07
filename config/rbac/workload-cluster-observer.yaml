@@ -1,0 +1,61 @@
+# Apply this in the WORKLOAD cluster, then build the kubeconfig referenced by
+# GPUCellPool.spec.workloadCluster.kubeconfigSecretRef from this ServiceAccount's
+# token. cluster-admin is NOT required — hand over this, not your admin config.
+#
+# Every verb here has a named consumer in
+# docs/design/gpucellpool-reconciliation.md §6. The Phase-4 (drain) rules are
+# commented out: enable them when automatic scale-down is in use.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gpu-cell-pool-observer
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpu-cell-pool-observer
+rules:
+  # Cell correlation + readiness, and applying the identity labels/taints the
+  # kubelet may not have set itself.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch, update]
+
+  # HAMi DevicePlugin-mode accounting: allocations live on pod annotations.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+
+  # HAMi DRA-mode accounting: ResourceSlice capacity + ResourceClaim
+  # consumedCapacity.
+  - apiGroups: [resource.k8s.io]
+    resources: [resourceslices, resourceclaims]
+    verbs: [get, list, watch]
+
+  # Phase 4 — draining a cell before it is removed.
+  # - apiGroups: [""]
+  #   resources: [pods/eviction]
+  #   verbs: [create]
+  # - apiGroups: [""]
+  #   resources: [nodes]
+  #   verbs: [delete]
+
+  # bootstrap.provider: KubeadmToken only — minting TTL'd join tokens.
+  # - apiGroups: [""]
+  #   resources: [secrets]
+  #   verbs: [create, get, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpu-cell-pool-observer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpu-cell-pool-observer
+subjects:
+  - kind: ServiceAccount
+    name: gpu-cell-pool-observer
+    namespace: kube-system

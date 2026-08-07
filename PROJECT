@@ -1,0 +1,16 @@
+domain: kubeswift.io
+layout:
+- go.kubebuilder.io/v4
+projectName: gpucellpool
+repo: github.com/kubeswift-io/gpucellpool
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: kubeswift.io
+  group: cells
+  kind: GPUCellPool
+  path: github.com/kubeswift-io/gpucellpool/api/v1alpha1
+  version: v1alpha1
+version: "3"
