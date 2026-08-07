@@ -128,8 +128,22 @@ spec.bootstrap.joinSecretRef ──► Secret <join>            (user-owned, con
 ```
 
 Substitutions (documented, closed set): `{{ cellName }}`, `{{ poolName }}`,
-`{{ cellInstance }}`, `{{ nodeLabels }}`, `{{ nodeIPInterface }}`,
-`{{ expectedGPUs }}`. No arbitrary templating language.
+`{{ nodeLabels }}`, `{{ nodeIPInterface }}`, `{{ expectedGPUs }}`. No arbitrary
+templating language, and an unknown token is an error rather than a passthrough —
+leaving `{{ cellname }}` in a boot script would produce a node that joins with a
+broken label and no explanation.
+
+**Quote your tokens in value position.** `hostname: {{ cellName }}` is not valid
+YAML: `{{…}}` parses as a nested flow mapping, so the template file cannot be
+YAML-checked before substitution (the rendered output is fine, because the tokens
+are gone by then). Write `hostname: "{{ cellName }}"` and the template validates
+both before and after.
+
+**A baked image needs an ssh key in the template.** The bake resets cloud-init,
+machine-id and host keys, so the only way into a cell is a key the join cloud-init
+installs — and KubeSwift's Cloud Hypervisor drops the serial console when no client
+is attached, so cloud-init output is not captured either. A thin template without
+`ssh_authorized_keys` produces a cell you cannot diagnose. (Learned the hard way.)
 
 Verified KubeSwift mechanics this relies on:
 
