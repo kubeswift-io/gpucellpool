@@ -19,6 +19,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+	"github.com/kubeswift-io/gpucellpool/internal/bootstrap"
 	"github.com/kubeswift-io/gpucellpool/internal/capacity"
 	"github.com/kubeswift-io/gpucellpool/internal/cellid"
 	"github.com/kubeswift-io/gpucellpool/internal/inventory"
@@ -212,6 +213,12 @@ func (r *GPUCellPoolReconciler) discoverCells(
 		}
 		prev := previous[name]
 
+		// Keep the rendered cloud-init current (node labels can change) before
+		// re-observing; Ensure recreates the seed profile if it went missing.
+		if err := r.ensureBootstrapSecret(ctx, pool, idx); err != nil {
+			return nil, err
+		}
+
 		outer, err := prov.Ensure(ctx, r.cellRequest(pool, idx))
 		if err != nil {
 			return nil, fmt.Errorf("observing cell %s: %w", name, err)
@@ -336,8 +343,77 @@ func (r *GPUCellPoolReconciler) createCell(
 	if err := cellid.ValidatePool(pool.Name); err != nil {
 		return err
 	}
+	if err := r.ensureBootstrapSecret(ctx, pool, idx); err != nil {
+		return err
+	}
 	_, err := prov.Ensure(ctx, r.cellRequest(pool, idx))
 	return err
+}
+
+// ensureBootstrapSecret renders this cell's cloud-init from the user's template
+// and stores it in a per-cell Secret the seed profile references.
+//
+// It must exist BEFORE the guest, or the VM boots with no cloud-init and never
+// joins. It is rewritten only when the content actually differs, because the
+// render is deterministic and rewriting a Secret every reconcile is churn.
+func (r *GPUCellPoolReconciler) ensureBootstrapSecret(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, idx int32,
+) error {
+	ref := pool.Spec.Bootstrap.JoinSecretRef
+	if ref == nil {
+		return fmt.Errorf("spec.bootstrap.joinSecretRef is required for the %s provider",
+			cellsv1alpha1.BootstrapProviderOpaque)
+	}
+
+	srcKey := pool.Spec.Bootstrap.JoinSecretKey
+	if srcKey == "" {
+		srcKey = bootstrap.SecretKey
+	}
+	var src corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Namespace: pool.Namespace, Name: ref.Name}, &src); err != nil {
+		return fmt.Errorf("reading join secret %s/%s: %w", pool.Namespace, ref.Name, err)
+	}
+	tmpl, ok := src.Data[srcKey]
+	if !ok {
+		return fmt.Errorf("join secret %s/%s has no %q key", pool.Namespace, ref.Name, srcKey)
+	}
+
+	name := cellid.Name(pool.Name, idx)
+	rendered, err := bootstrap.Render(tmpl, bootstrap.Values{
+		CellName:        name,
+		PoolName:        pool.Name,
+		NodeLabels:      bootstrap.NodeLabelArg(cellid.NodeLabels(pool.Name, idx, "", nodeLabels(pool))),
+		NodeIPInterface: pool.Spec.Cell.NodeIPFrom,
+		ExpectedGPUs:    expectedDevices(pool),
+	})
+	if err != nil {
+		return fmt.Errorf("rendering cloud-init for cell %s: %w", name, err)
+	}
+
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: pool.Namespace,
+			Name:      cellid.BootstrapSecretName(name),
+			Labels:    cellid.GuestLabels(pool.Name, idx),
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				pool, cellsv1alpha1.GroupVersion.WithKind("GPUCellPool"))},
+		},
+		Data: map[string][]byte{bootstrap.SecretKey: rendered},
+	}
+
+	var existing corev1.Secret
+	err = r.Get(ctx, types.NamespacedName{Namespace: desired.Namespace, Name: desired.Name}, &existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		return r.Create(ctx, desired)
+	case err != nil:
+		return fmt.Errorf("reading bootstrap secret %s: %w", desired.Name, err)
+	}
+	if string(existing.Data[bootstrap.SecretKey]) == string(rendered) {
+		return nil
+	}
+	existing.Data = desired.Data
+	return r.Update(ctx, &existing)
 }
 
 // progressDrain cordons a draining cell, waits for its GPU to be released, then
@@ -530,30 +606,26 @@ func (r *GPUCellPoolReconciler) workloadClient(
 	return cs, true, cellsv1alpha1.ReasonConnected, ""
 }
 
-// cellRequest builds the provisioner request for one cell.
-//
-// NOTE: the bootstrap Secret is referenced VERBATIM from spec.bootstrap. Per-cell
-// rendering with substitutions is not implemented yet, so the cloud-init must be
-// cell-agnostic — the guest hostname comes from the seed's meta-data (which IS
-// per-cell) and the identity labels are patched onto the Node by this controller.
+// cellRequest builds the provisioner request for one cell. The seed profile points
+// at the PER-CELL rendered Secret (see ensureBootstrapSecret), never at the user's
+// template directly, so the join credential stays in Secrets and each cell gets
+// its own substituted cloud-init.
 func (r *GPUCellPoolReconciler) cellRequest(pool *cellsv1alpha1.GPUCellPool, idx int32) provisioner.CellRequest {
 	name := cellid.Name(pool.Name, idx)
 	req := provisioner.CellRequest{
-		Pool:               pool.Name,
-		Namespace:          pool.Namespace,
-		Index:              idx,
-		CellName:           name,
-		GuestTemplate:      pool.Spec.Cell.GuestTemplate.Raw,
-		BootstrapSecretKey: pool.Spec.Bootstrap.JoinSecretKey,
-		Hostname:           name,
-		NodeIPFrom:         pool.Spec.Cell.NodeIPFrom,
-		SpreadPolicy:       pool.Spec.Cell.SpreadPolicy,
-		TemplateHash:       cellid.TemplateHash(pool.Spec.Cell.GuestTemplate.Raw),
+		Pool:                pool.Name,
+		Namespace:           pool.Namespace,
+		Index:               idx,
+		CellName:            name,
+		GuestTemplate:       pool.Spec.Cell.GuestTemplate.Raw,
+		BootstrapSecretName: cellid.BootstrapSecretName(name),
+		BootstrapSecretKey:  bootstrap.SecretKey,
+		Hostname:            name,
+		NodeIPFrom:          pool.Spec.Cell.NodeIPFrom,
+		SpreadPolicy:        pool.Spec.Cell.SpreadPolicy,
+		TemplateHash:        cellid.TemplateHash(pool.Spec.Cell.GuestTemplate.Raw),
 		OwnerRefs: []metav1.OwnerReference{*metav1.NewControllerRef(
 			pool, cellsv1alpha1.GroupVersion.WithKind("GPUCellPool"))},
-	}
-	if pool.Spec.Bootstrap.JoinSecretRef != nil {
-		req.BootstrapSecretName = pool.Spec.Bootstrap.JoinSecretRef.Name
 	}
 	if pool.Spec.Bootstrap.Hostname == "None" {
 		req.Hostname = ""

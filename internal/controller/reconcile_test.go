@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,103 @@ func TestReconcileCreatesACell(t *testing.T) {
 	}
 	if len(pool.Status.Cells) != 1 || pool.Status.Cells[0].Phase != cellsv1alpha1.CellPhaseAllocatingGPU {
 		t.Errorf("cells = %+v, want one in AllocatingGPU", pool.Status.Cells)
+	}
+}
+
+func TestReconcileRendersAPerCellBootstrapSecret(t *testing.T) {
+	f := newFixture(t, func(p *cellsv1alpha1.GPUCellPool) {
+		p.Spec.Cell.NodeIPFrom = "node"
+	})
+	// A template that needs per-cell values.
+	src := &corev1Secret{}
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "join"}, src); err != nil {
+		t.Fatalf("get join secret: %v", err)
+	}
+	src.Data["user-data"] = []byte(`#cloud-config
+hostname: {{ cellName }}
+labels: {{ nodeLabels }}
+iface: {{ nodeIPInterface }}
+gpus: {{ expectedGPUs }}
+`)
+	if err := outerClient.Update(context.Background(), src); err != nil {
+		t.Fatalf("update join secret: %v", err)
+	}
+
+	f.reconcile()
+
+	rendered := &corev1Secret{}
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "cells-0-bootstrap"}, rendered); err != nil {
+		t.Fatalf("per-cell bootstrap secret not created: %v", err)
+	}
+	got := string(rendered.Data["user-data"])
+	for _, want := range []string{
+		"hostname: cells-0",
+		"cells.kubeswift.io/cell=cells-0",
+		"gpu=on",
+		"iface: node",
+		"gpus: 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered cloud-init missing %q:\n%s", want, got)
+		}
+	}
+	// The user's template must not be modified.
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "join"}, src); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src.Data["user-data"]), "{{ cellName }}") {
+		t.Error("the operator rewrote the user's join Secret")
+	}
+
+	// The seed profile must reference the RENDERED secret, not the template.
+	seed := &unstructuredObj{}
+	seed.SetGroupVersionKind(seedGVK)
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "cells-0-seed"}, seed); err != nil {
+		t.Fatalf("get seed: %v", err)
+	}
+	ref := seed.Object["spec"].(map[string]any)["userDataFrom"].(map[string]any)["secretKeyRef"].(map[string]any)
+	if ref["name"] != "cells-0-bootstrap" {
+		t.Errorf("seed references %v, want the per-cell secret", ref["name"])
+	}
+
+	// A second pass must not churn the Secret.
+	before := rendered.ResourceVersion
+	f.reconcile()
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "cells-0-bootstrap"}, rendered); err != nil {
+		t.Fatal(err)
+	}
+	if rendered.ResourceVersion != before {
+		t.Error("bootstrap secret rewritten on a no-op reconcile")
+	}
+}
+
+func TestReconcileRejectsATemplateWithAnUnknownToken(t *testing.T) {
+	f := newFixture(t, nil)
+	src := &corev1Secret{}
+	if err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "join"}, src); err != nil {
+		t.Fatal(err)
+	}
+	src.Data["user-data"] = []byte("hostname: {{ cellname }}\n") // typo
+	if err := outerClient.Update(context.Background(), src); err != nil {
+		t.Fatal(err)
+	}
+
+	// Loud, not silent: a cell must not boot with a half-substituted boot script.
+	err := f.reconcileExpectingError()
+	if err == nil {
+		t.Fatal("reconcile accepted a template with an unknown token")
+	}
+	if !strings.Contains(err.Error(), "cellname") {
+		t.Errorf("error does not name the token: %v", err)
+	}
+	if len(f.guests()) != 0 {
+		t.Error("a cell was created despite the unrenderable template")
 	}
 }
 

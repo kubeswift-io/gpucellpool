@@ -22,6 +22,7 @@ import (
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 	"github.com/kubeswift-io/gpucellpool/internal/controller"
+	webhookv1alpha1 "github.com/kubeswift-io/gpucellpool/internal/webhook/v1alpha1"
 	"github.com/kubeswift-io/gpucellpool/internal/workload"
 )
 
@@ -37,11 +38,13 @@ func init() {
 
 func main() {
 	var metricsAddr, probeAddr string
-	var enableLeaderElection, secureMetrics bool
+	var enableLeaderElection, secureMetrics, enableWebhooks bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "Metrics endpoint address; 0 disables it.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Health probe endpoint address.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true, "Serve metrics over HTTPS.")
+	flag.BoolVar(&enableWebhooks, "enable-webhooks", true,
+		"Serve the validating webhook. Requires serving certs; disable for local runs against a cluster with no webhook configuration.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -75,6 +78,16 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up the GPUCellPool controller")
 		os.Exit(1)
+	}
+
+	if enableWebhooks {
+		// The guestTemplate denylist is a security control (a cell's launcher pod
+		// is privileged in the infrastructure cluster), so the webhook fails
+		// closed and is on by default.
+		if err := webhookv1alpha1.SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to set up the GPUCellPool webhook")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
