@@ -1,0 +1,78 @@
+# The operator's rights in the INFRASTRUCTURE cluster. Note what is absent:
+# resource.k8s.io is read-only (this operator never allocates a GPU — KubeSwift
+# and the scheduler do), and there is no access to pods or nodes here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-manager
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [cells.kubeswift.io]
+    resources: [gpucellpools]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cells.kubeswift.io]
+    resources: [gpucellpools/status]
+    verbs: [get, update, patch]
+  - apiGroups: [cells.kubeswift.io]
+    resources: [gpucellpools/finalizers]
+    verbs: [update]
+  - apiGroups: [swift.kubeswift.io]
+    resources: [swiftguests]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [seed.kubeswift.io]
+    resources: [swiftseedprofiles]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [resource.k8s.io]
+    resources: [resourceslices, resourceclaims, resourceclaimtemplates, deviceclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-manager
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gpucellpool.fullname" . }}-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gpucellpool.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{- if .Values.leaderElection }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gpucellpool.fullname" . }}-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gpucellpool.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

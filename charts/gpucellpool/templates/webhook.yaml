@@ -1,0 +1,77 @@
+{{- if .Values.webhook.enabled }}
+{{- $fullname := include "gpucellpool.fullname" . }}
+{{- $cert := (include "gpucellpool.webhookCert" . | fromYaml) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+spec:
+  selector: {{- include "gpucellpool.selectorLabels" . | nindent 4 }}
+  ports:
+    - port: 443
+      targetPort: {{ .Values.webhook.port }}
+      name: webhook
+---
+{{- if not .Values.webhook.certManager.enabled }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $fullname }}-webhook-cert
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ index $cert "tls.crt" }}
+  tls.key: {{ index $cert "tls.key" }}
+  ca.crt: {{ index $cert "ca.crt" }}
+---
+{{- else }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullname }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $fullname }}-webhook-cert
+  dnsNames:
+    - {{ $fullname }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ $fullname }}-webhook.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef: {{- toYaml .Values.webhook.certManager.issuerRef | nindent 4 }}
+---
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+  {{- if .Values.webhook.certManager.enabled }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ $fullname }}-webhook
+  {{- end }}
+webhooks:
+  - name: vgpucellpool.kb.io
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    # Fail-closed on purpose: the guestTemplate denylist is a security control,
+    # and a bypassed security control is a privilege escalation, not a degraded
+    # feature. A cell's launcher pod is privileged in THIS cluster.
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: {{ $fullname }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-cells-kubeswift-io-v1alpha1-gpucellpool
+      {{- if not .Values.webhook.certManager.enabled }}
+      caBundle: {{ index $cert "ca.crt" }}
+      {{- end }}
+    rules:
+      - apiGroups: [cells.kubeswift.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE, UPDATE]
+        resources: [gpucellpools]
+{{- end }}

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Fails if the committed CRDs, RBAC or deepcopy differ from what the
+      # markers generate. The apiserver silently drops unknown fields when a CRD
+      # drifts from its Go types, so this is not cosmetic.
+      - name: Verify generated files are committed
+        run: make verify
+
+      # Unit tests plus the two-apiserver envtest harness.
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make build
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+
+  chart:
+    name: Chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: azure/setup-helm@v4
+      - name: Lint and render
+        run: |
+          helm lint charts/gpucellpool
+          helm template gpucellpool charts/gpucellpool --namespace gpucellpool-system > /dev/null
+      # The chart ships a copy of the CRD; helm upgrade never updates crds/, so a
+      # stale copy would install an old schema on a fresh cluster and silently
+      # drop fields.
+      - name: CRD copy in the chart matches config/
+        run: diff -u config/crd/bases/cells.kubeswift.io_gpucellpools.yaml charts/gpucellpool/crds/cells.kubeswift.io_gpucellpools.yaml
+
+  image:
+    name: Image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

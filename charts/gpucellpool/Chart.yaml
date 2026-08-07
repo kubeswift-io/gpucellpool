@@ -1,0 +1,14 @@
+apiVersion: v2
+name: gpucellpool
+description: Pools of VM-isolated, fractionally-shared GPU worker nodes (KubeSwift + HAMi)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/kubeswift-io/gpucellpool
+sources:
+  - https://github.com/kubeswift-io/gpucellpool
+keywords:
+  - gpu
+  - kubeswift
+  - hami
+  - virtualization

@@ -1,0 +1,46 @@
+# The controller image.
+image:
+  repository: ghcr.io/kubeswift-io/gpucellpool/manager
+  tag: ""            # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+
+# Leader election matters as soon as replicaCount > 1: two reconcilers creating
+# cells for one pool would race on a physical GPU.
+leaderElection: true
+
+resources:
+  requests: {cpu: 50m, memory: 128Mi}
+  limits: {memory: 512Mi}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The validating webhook. It is ON by default because the guestTemplate denylist
+# is a security control: a cell's launcher pod is privileged in THIS cluster, so a
+# bypassed denylist is a privilege escalation rather than a lost convenience.
+webhook:
+  enabled: true
+  port: 9443
+  # certManager: let cert-manager issue and rotate the serving certificate.
+  # When false, the chart generates a self-signed certificate and reuses the
+  # existing one on upgrade (so the caBundle stays valid).
+  certManager:
+    enabled: false
+    issuerRef: {}    # e.g. {name: my-issuer, kind: ClusterIssuer, group: cert-manager.io}
+
+metrics:
+  # 0 disables the metrics endpoint. Serving is HTTPS with authn/authz.
+  bindAddress: ":8443"
+  secure: true
+
+# Install the CRDs. Note that `helm upgrade` never updates files in crds/, so a
+# CRD change needs `kubectl apply -f charts/gpucellpool/crds/` — the same caveat
+# KubeSwift has.
+installCRDs: true
+
+podAnnotations: {}
+podLabels: {}

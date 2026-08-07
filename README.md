@@ -55,6 +55,26 @@ spec:
       labels: {gpu: "on"}                 # HAMi's own gate, declared by you
 ```
 
+## Install
+
+```bash
+helm install gpucellpool oci://ghcr.io/kubeswift-io/charts/gpucellpool \
+  --namespace gpucellpool-system --create-namespace
+```
+
+`helm upgrade` never updates files in `crds/`, so after a chart upgrade that
+changes the API:
+
+```bash
+kubectl apply -f charts/gpucellpool/crds/
+```
+
+The validating webhook is on by default and the chart issues its own certificate
+(set `webhook.certManager.enabled=true` to use cert-manager instead). Leaving the
+webhook off means a pool spec can ask for things that should be rejected — the
+`guestTemplate` denylist is a security control, because a cell's launcher pod is
+privileged in the infrastructure cluster.
+
 ## Requirements
 
 | | |

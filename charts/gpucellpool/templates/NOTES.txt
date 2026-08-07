@@ -1,0 +1,33 @@
+gpucellpool {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
+
+Before a pool can do anything, the two clusters need to be ready:
+
+  INFRASTRUCTURE cluster (this one)
+    - KubeSwift >= v0.13.4, a GPU node labelled kubeswift.io/gpu-node=true
+    - a DeviceClass for VFIO GPUs and a ResourceClaimTemplate referencing it
+    - a SwiftGuestClass and a SwiftImage for the cell VM
+
+  WORKLOAD cluster
+    - HAMi installed, and its DaemonSets tolerating your pool's taints
+    - reachable from here, AND its apiserver able to dial the cells' kubelets
+      (cells need a routable interface, not just egress -- see cell.nodeIPFrom)
+
+Then create the two Secrets a pool references and apply it:
+
+  kubectl -n <ns> create secret generic workload-kubeconfig --from-file=value=<kubeconfig>
+  kubectl -n <ns> create secret generic cell-join --from-file=user-data=<cloud-init>
+  kubectl apply -f gpucellpool.yaml
+
+Watch both layers:
+
+  kubectl get cellpool -n <ns> -w
+  kubectl describe cellpool <name> -n <ns>
+
+A cell only becomes Ready when the VM runs, its Node registers Ready, AND HAMi
+advertises the GPU. If it sits in AwaitingGPUCapacity, the message names why.
+{{- if not .Values.webhook.enabled }}
+
+WARNING: the validating webhook is disabled. The guestTemplate denylist is a
+security control -- a cell's launcher pod is privileged in this cluster -- so
+leaving it off means a pool spec can ask for things that should be rejected.
+{{- end }}

@@ -1,0 +1,86 @@
+name: Release
+
+# On a vX.Y.Z tag: build and push the manager image and the OCI chart, sign both
+# with cosign (keyless), and open a draft GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the release
+  packages: write   # push to GHCR
+  id-token: write   # cosign keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/kubeswift-io/gpucellpool/manager
+  CHART: oci://ghcr.io/kubeswift-io/charts
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The chart's version and appVersion must match the tag, or an install
+      # silently deploys a different build than the release claims.
+      - name: Chart version matches the tag
+        run: |
+          want="${{ steps.version.outputs.version }}"
+          got_v=$(grep '^version:' charts/gpucellpool/Chart.yaml | awk '{print $2}')
+          got_a=$(grep '^appVersion:' charts/gpucellpool/Chart.yaml | awk '{print $2}' | tr -d '"')
+          [ "$got_v" = "$want" ] || { echo "Chart version $got_v != tag $want"; exit 1; }
+          [ "$got_a" = "$want" ] || { echo "Chart appVersion $got_a != tag $want"; exit 1; }
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the manager image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign the image
+        run: cosign sign --yes ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Package and push the chart
+        id: chart
+        run: |
+          helm package charts/gpucellpool --version "${{ steps.version.outputs.version }}"
+          out=$(helm push "gpucellpool-${{ steps.version.outputs.version }}.tgz" "${{ env.CHART }}" 2>&1)
+          echo "$out"
+          echo "digest=$(echo "$out" | awk '/Digest:/ {print $2}')" >> "$GITHUB_OUTPUT"
+        env:
+          HELM_REGISTRY_CONFIG: /home/runner/.docker/config.json
+
+      - name: Sign the chart
+        run: cosign sign --yes ghcr.io/kubeswift-io/charts/gpucellpool@${{ steps.chart.outputs.digest }}
+
+      - name: Draft release
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --draft --generate-notes \
+            --title "${GITHUB_REF_NAME}" \
+            "gpucellpool-${{ steps.version.outputs.version }}.tgz"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
