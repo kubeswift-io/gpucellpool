@@ -95,16 +95,28 @@ func PlanMembership(in MembershipInput) MembershipPlan {
 		totalFails int32
 	)
 	for _, c := range in.Cells {
-		used = append(used, c.Index)
 		totalFails += c.FailureCount
 		switch c.Phase {
 		case cellsv1alpha1.CellPhaseFailed:
 			failed = append(failed, c)
+			// A failed cell whose guest still exists OCCUPIES its index: it may
+			// still hold a GPU, and replacement means delete-then-recreate the
+			// same index, not quietly adding a parallel cell beside it. A
+			// tombstone (the guest is gone, the row survives to carry the failure
+			// count and backoff) does not occupy anything, so its index is the
+			// one the create path refills.
+			if c.GuestUID != "" {
+				used = append(used, c.Index)
+				live++
+			}
 		case cellsv1alpha1.CellPhaseDraining, cellsv1alpha1.CellPhaseDeleting:
-			// Not part of the live set; do not count toward desired.
+			// On the way out; do not count toward desired.
+			used = append(used, c.Index)
 		case cellsv1alpha1.CellPhaseReady:
+			used = append(used, c.Index)
 			live++
 		default:
+			used = append(used, c.Index)
 			live++
 			inFlight++
 		}

@@ -34,6 +34,9 @@ type Counts struct {
 	Allocated int
 	// Free is Ready minus Allocated, floored at zero.
 	Free int
+	// Known is false when this driver publishes no devices at all, in which case
+	// Free says nothing and must be treated as unknown by the caller.
+	Known bool
 }
 
 // FreeGPUs counts allocatable VFIO GPUs in the infrastructure cluster.
@@ -41,6 +44,12 @@ type Counts struct {
 // It returns (nil, err) on failure — never a zero count. The caller treats nil as
 // UNKNOWN and proceeds, because refusing to create a cell because we failed to
 // read is as wrong as creating one blindly.
+//
+// Counts.Known is the same idea one level down: a driver that publishes NOTHING
+// tells us nothing about capacity. That is a configuration signal (the native
+// SwiftGPU backend publishes no ResourceSlices at all, and a cluster may use a
+// different driver name), not "the cluster is full" — so it must not stall the
+// pool. Only devices we can actually see can be counted as taken.
 func FreeGPUs(ctx context.Context, c client.Client, driver string) (*Counts, error) {
 	if driver == "" {
 		driver = KubeSwiftDriver
@@ -99,5 +108,6 @@ func FreeGPUs(ctx context.Context, c client.Client, driver string) (*Counts, err
 	if counts.Free < 0 {
 		counts.Free = 0
 	}
+	counts.Known = counts.Published > 0
 	return counts, nil
 }

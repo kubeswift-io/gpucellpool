@@ -135,15 +135,21 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 	}
 	set(cellsv1alpha1.ConditionCapacityProviderReady, in.ProviderHealth.Ready, providerReason, in.ProviderHealth.Message)
 
-	// Outer inventory. False only when a cell actually wants a GPU and none is
-	// free — a saturated cluster with a satisfied pool is not a fault.
+	// Outer inventory. False only when the pool actually wants a GPU and none is
+	// free — a saturated cluster with a satisfied pool is not a fault. "Wants"
+	// includes a pool that could not even create a cell object yet: that is the
+	// commonest shape of this failure and the earliest moment we can name it.
+	wantsGPU := in.CellsWaitingForGPU > 0 || in.Membership.Reason == cellsv1alpha1.ReasonInsufficientGPUs
 	switch {
 	case in.FreeGPUs == nil:
 		set(cellsv1alpha1.ConditionPhysicalGPUsAvailable, true, cellsv1alpha1.ReasonCapacityUnknown,
 			"free GPU count could not be read from the infrastructure cluster")
-	case *in.FreeGPUs <= 0 && in.CellsWaitingForGPU > 0:
-		set(cellsv1alpha1.ConditionPhysicalGPUsAvailable, false, cellsv1alpha1.ReasonInsufficientGPUs,
-			itoa(in.CellsWaitingForGPU)+" cell(s) waiting and no free GPU in the infrastructure cluster")
+	case *in.FreeGPUs <= 0 && wantsGPU:
+		msg := "the pool wants more cells and no free GPU is available in the infrastructure cluster"
+		if in.CellsWaitingForGPU > 0 {
+			msg = itoa(in.CellsWaitingForGPU) + " cell(s) waiting and no free GPU in the infrastructure cluster"
+		}
+		set(cellsv1alpha1.ConditionPhysicalGPUsAvailable, false, cellsv1alpha1.ReasonInsufficientGPUs, msg)
 	default:
 		set(cellsv1alpha1.ConditionPhysicalGPUsAvailable, true, cellsv1alpha1.ReasonFreeDevices,
 			itoa(deref(in.FreeGPUs))+" free GPU(s) in the infrastructure cluster")

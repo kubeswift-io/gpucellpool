@@ -169,6 +169,20 @@ func TestComputeConditionsLocalisesTheFault(t *testing.T) {
 		}
 	})
 
+	t.Run("a pool that cannot even create a cell yet still reports the shortage", func(t *testing.T) {
+		// The commonest shape of this failure: desired > 0, no cell objects exist
+		// because the pre-flight refused to create them.
+		zero := 0
+		in := base
+		in.FreeGPUs = &zero
+		in.CellsWaitingForGPU = 0
+		in.Membership = MembershipPlan{Stalled: true, Reason: cellsv1alpha1.ReasonInsufficientGPUs}
+		c := conditionOf(ComputeConditions(in), cellsv1alpha1.ConditionPhysicalGPUsAvailable)
+		if c.Status != metav1.ConditionFalse || c.Reason != cellsv1alpha1.ReasonInsufficientGPUs {
+			t.Errorf("got %+v, want False/InsufficientPhysicalGPU", c)
+		}
+	})
+
 	t.Run("unknown free count does not invent a fault", func(t *testing.T) {
 		in := base
 		in.FreeGPUs = nil

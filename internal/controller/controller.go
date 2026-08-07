@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -92,10 +93,13 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Step 10 (partly): the outer inventory, which also gates creation below.
+	// A read failure, or a driver that publishes nothing at all, both leave this
+	// nil: UNKNOWN. Only a driver that publishes devices we can see is allowed to
+	// stall the pool with "no free GPU".
 	var freeGPUs *int
 	if counts, invErr := inventory.FreeGPUs(ctx, r.Client, ""); invErr != nil {
 		log.V(1).Info("physical inventory unreadable; treating free GPUs as unknown", "err", invErr.Error())
-	} else {
+	} else if counts.Known {
 		freeGPUs = &counts.Free
 	}
 
@@ -115,6 +119,14 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		r.event(&pool, corev1.EventTypeNormal, cellsv1alpha1.ReasonCellCreating,
 			fmt.Sprintf("creating cell %s", cellid.Name(pool.Name, idx)))
+	}
+	if len(plan.Create) > 0 {
+		// Re-observe so this pass's status already mentions the cells it just
+		// created. Otherwise `kubectl get` right after `apply` reports zero cells
+		// while their guests plainly exist, which reads as a broken pool.
+		if cells, err = r.discoverCells(ctx, &pool, prov, inner, provider, reachable); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	for _, name := range plan.Drain {
 		r.markDraining(cells, name)
@@ -259,6 +271,30 @@ func (r *GPUCellPoolReconciler) discoverCells(
 
 		out = append(out, r.cellStatus(prev, name, idx, outer, obs, dec))
 	}
+
+	// Carry forward a row for a failed cell whose guest we have already deleted.
+	// The row is what remembers the failure count and the backoff; without it a
+	// replaced cell starts from zero and the pool retries a broken configuration
+	// every thirty seconds forever. The tombstone claims no index, so the create
+	// path refills exactly that slot.
+	live := map[string]bool{}
+	for _, c := range out {
+		live[c.Name] = true
+	}
+	for name, prev := range previous {
+		if live[name] || prev.Phase != cellsv1alpha1.CellPhaseFailed {
+			continue
+		}
+		if prev.Index >= pool.Spec.Replicas {
+			continue // the pool no longer wants this slot
+		}
+		prev.GuestUID = ""
+		prev.NodeName = ""
+		prev.Devices = nil
+		prev.CapacityDevices = 0
+		out = append(out, prev)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out, nil
 }
 
