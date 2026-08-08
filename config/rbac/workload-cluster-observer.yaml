@@ -19,9 +19,15 @@ metadata:
 rules:
   # Cell correlation + readiness, and applying the identity labels/taints the
   # kubelet may not have set itself.
+  #
+  # DELETE is not optional and is not a drain feature. Two ALWAYS-ON paths remove a
+  # workload Node: reaping a Node left behind by a previous incarnation of a cell
+  # (without which the pool reports a phantom Ready cell, or HAMi advertises a GPU
+  # that no longer exists), and removing a cell's Node when the cell goes. Grant it
+  # or every teardown fails Forbidden and stale Nodes accumulate.
   - apiGroups: [""]
     resources: [nodes]
-    verbs: [get, list, watch, patch, update]
+    verbs: [get, list, watch, patch, update, delete]
 
   # HAMi DevicePlugin-mode accounting: allocations live on pod annotations.
   - apiGroups: [""]
@@ -34,18 +40,9 @@ rules:
     resources: [resourceslices, resourceclaims]
     verbs: [get, list, watch]
 
-  # Phase 4 — draining a cell before it is removed.
-  # - apiGroups: [""]
-  #   resources: [pods/eviction]
-  #   verbs: [create]
-  # - apiGroups: [""]
-  #   resources: [nodes]
-  #   verbs: [delete]
-
-  # bootstrap.provider: KubeadmToken only — minting TTL'd join tokens.
-  # - apiGroups: [""]
-  #   resources: [secrets]
-  #   verbs: [create, get, update, delete]
+  # Nothing else is needed. In particular this operator does NOT evict pods: it
+  # waits for a cell's GPU to be released rather than taking it away, so it needs no
+  # pods/eviction right. If a cell must be emptied, drain it with kubectl.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -33,8 +33,9 @@ var (
 	//
 	// This is the number that decides how autoscaling should be framed: a cell
 	// that takes fifteen minutes is a capacity-planning unit, not something a
-	// reactive autoscaler can chase. Buckets span "baked image, thin enrollment"
-	// through "installs a driver at first boot", which measured ~14 minutes.
+	// reactive autoscaler can chase. Buckets span "baked image, thin enrollment" —
+	// measured at 4m45s, about three minutes of which is cloning the root disk —
+	// through "installs a driver at first boot", which measured about 14 minutes.
 	CellStartupSeconds = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    prefix + "cell_startup_seconds",
 		Help:    "Seconds from cell creation to Ready.",

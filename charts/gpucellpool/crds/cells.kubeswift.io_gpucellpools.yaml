@@ -70,7 +70,8 @@ spec:
               autoscaling:
                 description: |-
                   Autoscaling, when enabled, lets unsatisfiable GPU demand in the WORKLOAD
-                  cluster create cells. Scale-UP only in v1alpha1 (see AutoscalingSpec).
+                  cluster create cells, and lets idle cells be removed again (see
+                  AutoscalingSpec).
                 properties:
                   enabled:
                     description: |-
@@ -118,10 +119,10 @@ spec:
                     default: 10m
                     description: |-
                       StabilizationWindow is how long to wait after a scale-up before scaling up
-                      again. A cell takes minutes to become Ready (measured: ~14 minutes with
-                      install-at-boot, less with a baked image), and demand does not clear until
-                      it does — so without this window one burst of pending pods creates a cell
-                      per reconcile.
+                      again. A cell takes minutes to become Ready (measured: 4m45s from a baked
+                      image, about three minutes of which is cloning the root disk), and demand does
+                      not clear until it does — so without this window one burst of pending pods
+                      creates a cell per reconcile.
                     type: string
                 type: object
               bootstrap:
@@ -166,10 +167,10 @@ spec:
                     x-kubernetes-map-type: atomic
                   provider:
                     default: Opaque
-                    description: Provider selects the join-credential mechanism.
+                    description: Provider selects the join-credential mechanism. Opaque
+                      is the only value.
                     enum:
                     - Opaque
-                    - KubeadmToken
                     type: string
                   readyTimeout:
                     default: 15m
@@ -383,10 +384,11 @@ spec:
                     default: SwiftGuest
                     description: |-
                       Provisioner creates the outer objects for a cell.
-                        SwiftGuest: create a KubeSwift SwiftGuest directly (the only mode today).
-                        ClusterAPI: size a MachineDeployment (later phase; requires a CAPI-managed
-                                    workload cluster, so it is an additional mode, never a
-                                    replacement).
+                        SwiftGuest: create a KubeSwift SwiftGuest directly.
+                        ClusterAPI: create one Cluster API Machine + KubeSwiftMachine per cell, so
+                                    the cell is a member of a CAPI-managed cluster. An additional
+                                    mode, never a replacement: CAPI can only add Machines to a
+                                    cluster it already manages.
                     enum:
                     - SwiftGuest
                     - ClusterAPI
@@ -428,9 +430,9 @@ spec:
                 default: 1
                 description: |-
                   Replicas is the desired number of cells. Scaled via the scale subresource,
-                  so `kubectl scale` and an HPA both work. Autoscaling (min/max, demand
-                  signals) is a later phase and will arrive as a separate `autoscaling` block
-                  rather than by changing this field.
+                  so `kubectl scale` and an HPA both work. When spec.autoscaling is enabled it
+                  overrides this: the pool then aims for status.desiredReplicas, and replicas
+                  acts as the default floor.
                 format: int32
                 minimum: 0
                 type: integer
