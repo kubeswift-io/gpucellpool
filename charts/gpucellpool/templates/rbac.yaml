@@ -6,46 +6,12 @@ kind: ClusterRole
 metadata:
   name: {{ include "gpucellpool.fullname" . }}-manager
   labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+# The rules themselves are GENERATED from config/rbac/role.yaml by `make manifests`,
+# for the same reason the CRD is copied there: a hand-maintained second copy drifts
+# silently. It did — the chart shipped without the Cluster API rules, so the operator
+# deployed happily and then could not create a single Machine.
 rules:
-  - apiGroups: [cells.kubeswift.io]
-    resources: [gpucellpools]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [cells.kubeswift.io]
-    resources: [gpucellpools/status]
-    verbs: [get, update, patch]
-  - apiGroups: [cells.kubeswift.io]
-    resources: [gpucellpools/finalizers]
-    verbs: [update]
-  - apiGroups: [swift.kubeswift.io]
-    resources: [swiftguests]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [seed.kubeswift.io]
-    resources: [swiftseedprofiles]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [resource.k8s.io]
-    resources: [resourceslices, resourceclaims, resourceclaimtemplates, deviceclasses]
-    verbs: [get, list, watch]
-  # cell.provisioner: ClusterAPI. The bootstrap group is wildcarded because the
-  # bootstrap provider is the user's choice (kubeadm, k0smotron, ...) and its kind is
-  # named in the pool spec, not known at build time.
-  - apiGroups: [cluster.x-k8s.io]
-    resources: [machines]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [cluster.x-k8s.io]
-    resources: [clusters]
-    verbs: [get, list, watch]
-  - apiGroups: [infrastructure.cluster.x-k8s.io]
-    resources: [kubeswiftmachines]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [bootstrap.cluster.x-k8s.io]
-    resources: ["*"]
-    verbs: [get, list, watch, create, update, patch, delete]
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get, list, watch, create, update, patch]
-  - apiGroups: [""]
-    resources: [events]
-    verbs: [create, patch]
+{{- .Files.Get "rules.yaml" | nindent 2 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

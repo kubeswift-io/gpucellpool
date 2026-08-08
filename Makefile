@@ -36,6 +36,10 @@ manifests: controller-gen ## Generate CRDs and RBAC into config/, and sync the c
 	# of generation means it cannot drift; CI's diff then guards a machine step
 	# rather than someone's memory.
 	cp config/crd/bases/*.yaml charts/gpucellpool/crds/
+	# Same reasoning for the ClusterRole rules. Nothing synced these before, so the
+	# kubebuilder markers and the chart's hand-written copy drifted independently —
+	# and the chart silently lacked the Cluster API rules it needed.
+	sed -n '/^rules:/,$$p' config/rbac/role.yaml | tail -n +2 > charts/gpucellpool/rules.yaml
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy methods.
