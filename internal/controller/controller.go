@@ -670,9 +670,13 @@ func (r *GPUCellPoolReconciler) writeStatus(
 	r.publishMetrics(pool, cells, scale, freeGPUs, cap0, capacityKnown)
 
 	pool.Status.Conditions = ApplyConditions(pool.Status.Conditions, ComputeConditions(ConditionInput{
-		Generation:         pool.Generation,
-		Desired:            pool.Spec.Replicas,
-		Ready:              ready,
+		Generation: pool.Generation,
+		// The scaling decision, NOT spec.replicas: with autoscaling on, spec.replicas
+		// is not the target. Comparing against it made Ready wrong in both directions
+		// — a pool correctly holding 2 autoscaled cells read "2 of 1 cells are Ready"
+		// and False, and one correctly holding none read "0 of 1".
+		Desired: scale.Desired,
+		Ready:   ready,
 		WorkloadReachable:  reachable,
 		WorkloadReason:     reachReason,
 		WorkloadMessage:    reachMsg,

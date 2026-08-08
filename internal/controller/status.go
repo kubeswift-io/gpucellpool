@@ -172,6 +172,13 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 			in.Capacity.MemoryAllocatedMiB < in.Capacity.MemoryTotalMiB,
 			cellsv1alpha1.ReasonHeterogeneous,
 			"pool holds more than one GPU model; per-model capacity is authoritative and the pool-wide compute aggregate is omitted")
+	case in.Capacity.Devices == 0 && emptyByDesign(in):
+		// A pool holding no cells advertises no capacity, and that is not a fault or
+		// an unknown. Distinguishing it matters: the case below is the failure this
+		// pool exists to catch (a booted VM whose GPU never surfaced).
+		set(cellsv1alpha1.ConditionCapacityAvailable, false, cellsv1alpha1.ReasonScaledToZero,
+			"the pool holds no cells, so it advertises no GPU capacity; "+
+				"a pending request that one cell can satisfy will create one")
 	case in.Capacity.Devices == 0:
 		set(cellsv1alpha1.ConditionCapacityAvailable, false, cellsv1alpha1.ReasonCapacityUnknown,
 			"no GPU devices are advertised by the capacity provider yet")
@@ -216,6 +223,10 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 		ready = false
 		readyReason = in.ProviderHealth.Reason
 		readyMsg = in.ProviderHealth.Message
+	case emptyByDesign(in):
+		// Nothing is wrong: the pool was asked for no cells and holds none.
+		readyReason = cellsv1alpha1.ReasonScaledToZero
+		readyMsg = "the pool holds no cells by design (desired 0)"
 	case !ready:
 		readyReason = cellsv1alpha1.ReasonCellsNotReady
 		readyMsg = itoa(int(in.Ready)) + " of " + itoa(int(in.Desired)) + " cells are Ready"
@@ -223,6 +234,12 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 	set(cellsv1alpha1.ConditionReady, ready, readyReason, readyMsg)
 
 	return out
+}
+
+// emptyByDesign reports whether the pool is holding no cells because none were
+// asked for, as opposed to holding none because it cannot create them.
+func emptyByDesign(in ConditionInput) bool {
+	return in.Desired == 0 && in.Ready == 0
 }
 
 // ApplyConditions merges computed conditions into an existing slice, preserving

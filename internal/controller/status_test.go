@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -220,5 +221,64 @@ func TestApplyConditionsPreservesTransitionTimes(t *testing.T) {
 	}
 	if got.Message != "still fine" {
 		t.Errorf("message not updated: %q", got.Message)
+	}
+}
+
+// The Ready condition used to be measured against spec.replicas, which is not the
+// target once autoscaling is on — so it was wrong in both directions.
+func TestReadyIsMeasuredAgainstTheScalingTarget(t *testing.T) {
+	base := ConditionInput{
+		WorkloadReachable: true,
+		ProviderHealth:    capacity.Health{Ready: true},
+		CapacityKnown:     true,
+		Capacity:          capacity.Capacity{Devices: 2, Homogeneous: true, MemoryTotalMiB: 16384},
+	}
+
+	// Autoscaled up to 2 and both Ready: the pool is healthy even though
+	// spec.replicas still says 1.
+	in := base
+	in.Desired, in.Ready = 2, 2
+	if c := meta.FindStatusCondition(ComputeConditions(in), cellsv1alpha1.ConditionReady); c == nil ||
+		c.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %+v, want True for a healthy autoscaled pool", c)
+	}
+
+	// Genuinely short of the target: still False, and the numbers must be the ones
+	// being aimed at.
+	in.Ready = 1
+	c := meta.FindStatusCondition(ComputeConditions(in), cellsv1alpha1.ConditionReady)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != cellsv1alpha1.ReasonCellsNotReady {
+		t.Fatalf("Ready = %+v, want False/CellsNotReady", c)
+	}
+	if !strings.Contains(c.Message, "1 of 2") {
+		t.Errorf("message = %q, want it to quote the scaling target", c.Message)
+	}
+}
+
+func TestAnEmptyPoolByDesignIsNotBroken(t *testing.T) {
+	in := ConditionInput{
+		WorkloadReachable: true,
+		ProviderHealth:    capacity.Health{Ready: true},
+		CapacityKnown:     true,
+		Capacity:          capacity.Capacity{Devices: 0, Homogeneous: true},
+		Desired:           0,
+		Ready:             0,
+	}
+	conds := ComputeConditions(in)
+
+	ready := meta.FindStatusCondition(conds, cellsv1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %+v, want True: the pool holds what was asked of it", ready)
+	}
+	if ready.Reason != cellsv1alpha1.ReasonScaledToZero {
+		t.Errorf("Ready reason = %q, want ScaledToZero", ready.Reason)
+	}
+
+	// No capacity is honest — a workload cannot run right now — but it is not
+	// "unknown", and the reason must not read as a fault.
+	cap0 := meta.FindStatusCondition(conds, cellsv1alpha1.ConditionCapacityAvailable)
+	if cap0 == nil || cap0.Status != metav1.ConditionFalse ||
+		cap0.Reason != cellsv1alpha1.ReasonScaledToZero {
+		t.Errorf("CapacityAvailable = %+v, want False/ScaledToZero", cap0)
 	}
 }

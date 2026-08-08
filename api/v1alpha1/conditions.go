@@ -84,6 +84,10 @@ const (
 	ReasonAtMinReplicas       = "AtMinReplicas"
 	ReasonNoIdleCell          = "NoIdleCell"
 
+	// ReasonScaledToZero marks a pool that deliberately holds no cells, so that an
+	// empty-by-design pool is not reported as a broken one.
+	ReasonScaledToZero = "ScaledToZero"
+
 	// ReasonCellShapeUnknown means we cannot judge whether a fresh cell would
 	// satisfy a pending request, because the pool has never advertised a device
 	// and so has no shape to compare against. Distinct from DemandUnsatisfiable
