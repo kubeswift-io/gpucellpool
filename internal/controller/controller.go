@@ -113,6 +113,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		health        capacity.Health
 		demand        capacity.Demand
 		demandKnown   bool
+		shape         *capacity.Device
 	)
 	if reachable && provider != nil {
 		nodes := readyNodeNames(cells)
@@ -128,16 +129,24 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			cap0, capacityKnown = c, true
 		}
 		if autoscalingEnabled(&pool) {
-			// The reference device is what a fresh cell would bring, learned from
-			// what the pool already advertises. Nil means we cannot judge
-			// satisfiability, and the scaler then refuses to act.
-			if d, dErr := provider.PendingDemand(ctx, ReferenceDevice(cap0)); dErr != nil {
+			// The reference device is what a fresh cell would bring: what the pool
+			// advertises now, else the shape it remembers from when it last had a
+			// cell. Nil means we cannot judge satisfiability at all, and the scaler
+			// then refuses to act rather than guessing.
+			shape = CellShape(cap0, pool.Status.CellDeviceShape)
+			if d, dErr := provider.PendingDemand(ctx, shape); dErr != nil {
 				log.V(1).Info("GPU demand unreadable; not scaling", "err", dErr.Error())
 				poolmetrics.CapacityScrapeErrorsTotal.WithLabelValues(pool.Name, pool.Namespace, "demand").Inc()
 			} else {
 				demand, demandKnown = d, true
 			}
 		}
+	}
+
+	// Remember the shape whenever a live cell shows it. This outlives the cells so a
+	// pool that scaled to zero can still tell whether a fresh one would help.
+	if learned := RememberShape(ReferenceDevice(cap0), r.now()); learned != nil {
+		pool.Status.CellDeviceShape = learned
 	}
 
 	poolmetrics.WorkloadClusterReachable.WithLabelValues(pool.Name, pool.Namespace).
@@ -156,6 +165,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		LiveCells:       liveCells(cells),
 		Demand:          demand,
 		DemandKnown:     demandKnown,
+		ShapeKnown:      shape != nil,
 		FreeGPUs:        freeGPUs,
 		IdleCells:       idle,
 		Now:             r.now(),

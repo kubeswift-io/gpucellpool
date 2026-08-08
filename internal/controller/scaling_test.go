@@ -28,8 +28,11 @@ func scaleInput(live int32, satisfiable, pending int) ScaleInput {
 		LiveCells:   live,
 		Demand:      capacity.Demand{PendingRequests: pending, SatisfiableByOneCell: satisfiable},
 		DemandKnown: true,
-		FreeGPUs:    &free,
-		Now:         now,
+		// A pool with live cells knows what a cell brings; the shape-unknown case is
+		// exercised on its own below.
+		ShapeKnown: true,
+		FreeGPUs:   &free,
+		Now:        now,
 	}
 }
 

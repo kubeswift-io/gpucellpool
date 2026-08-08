@@ -267,8 +267,31 @@ The second gate is satisfiability against a reference device — the shape a fre
 cell would bring, learned from what the pool already advertises. A request for two
 devices, or for more memory or compute than one device has, is counted as pending
 and explicitly NOT satisfiable: adding a cell would burn a GPU and a VM boot to
-change nothing. An empty pool yields no reference shape, and then nothing is
-reported satisfiable, because an automatic action must not run on a guess.
+change nothing.
+
+### 8.1 The remembered cell shape (why scale-to-zero is not a one-way door)
+
+Deriving the reference shape from *live* capacity alone made an empty pool
+permanently empty, and that only surfaced when automatic scale-down landed:
+
+- the pool shrinks to its last cell and removes it (`minReplicas: 0`);
+- a request then arrives, and there is no live cell to read a shape from;
+- with no shape, nothing is counted satisfiable, so the pool refuses to grow —
+  **for ever**, and it blamed the request ("none fits one cell of this pool's shape")
+  while the truth was "I no longer know what a cell brings".
+
+So the shape is **remembered**: `status.cellDeviceShape` (model, `memoryMiB`,
+`corePercent`, `lastObserved`) is written whenever a live cell advertises a device
+and is retained after the last cell goes. Resolution order is live-then-remembered —
+live is current, and the memory is only consulted in exactly the scaled-to-zero case.
+A failed or empty capacity read never overwrites the memory with zeros, because a
+zero-sized shape would make every request "fit".
+
+When the pool has *never* advertised a device there is nothing to remember, and it
+reports `CellShapeUnknown` rather than `DemandUnsatisfiable` — a distinct reason,
+because the operator action differs: set `replicas`/`minReplicas` to 1 once so the
+pool learns its shape. Refusing to act is still correct there; an automatic action
+must not run on a guess.
 
 Measured note that shaped this: HAMi refuses an over-large request at SCHEDULING
 time ("0/1 nodes are available: 1 NodeUnfitPod"), so over-large requests do show up

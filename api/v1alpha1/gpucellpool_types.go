@@ -607,6 +607,12 @@ type GPUCellPoolStatus struct {
 	// +optional
 	Demand *DemandStatus `json:"demand,omitempty"`
 
+	// CellDeviceShape is the remembered shape of one cell's GPU. It outlives the
+	// cells themselves so that a pool which scaled to zero can still judge whether
+	// a fresh cell would satisfy a pending request.
+	// +optional
+	CellDeviceShape *CellDeviceShape `json:"cellDeviceShape,omitempty"`
+
 	// LastScaleUpTime gates the stabilization window.
 	// +optional
 	LastScaleUpTime *metav1.Time `json:"lastScaleUpTime,omitempty"`
@@ -645,6 +651,34 @@ type GPUCellPoolStatus struct {
 }
 
 // DemandStatus is unsatisfiable GPU demand observed in the workload cluster.
+// CellDeviceShape is what one cell's GPU brings, learned from what the pool
+// advertises while it has a Ready cell and RETAINED after the last one goes.
+//
+// It exists because scale-to-zero would otherwise be a one-way door. The
+// satisfiability test compares a pending request against the shape of a cell this
+// pool would create; with no live cell there is nothing to compare against, so
+// every request reads as "does not fit" and an empty pool can never grow again.
+// Remembering the shape makes shrinking to zero recoverable — which is the whole
+// reason to allow minReplicas: 0.
+type CellDeviceShape struct {
+	// Model is the GPU model the provider reported, for operator recognition.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// MemoryMiB is one device's GPU memory.
+	MemoryMiB int64 `json:"memoryMiB"`
+
+	// CorePercent is one device's compute, as the percentage the provider
+	// accounts in (100 = a whole device).
+	CorePercent int64 `json:"corePercent"`
+
+	// LastObserved is when this shape was last confirmed against a live cell. A
+	// shape older than the pool's cells is still used — it is the best knowledge
+	// available — but the timestamp says how stale it is.
+	// +optional
+	LastObserved *metav1.Time `json:"lastObserved,omitempty"`
+}
+
 type DemandStatus struct {
 	// PendingRequests is how many GPU requests cannot currently be placed.
 	PendingRequests int32 `json:"pendingRequests"`

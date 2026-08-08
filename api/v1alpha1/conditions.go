@@ -83,6 +83,13 @@ const (
 	ReasonScaledDown          = "ScaledDown"
 	ReasonAtMinReplicas       = "AtMinReplicas"
 	ReasonNoIdleCell          = "NoIdleCell"
+
+	// ReasonCellShapeUnknown means we cannot judge whether a fresh cell would
+	// satisfy a pending request, because the pool has never advertised a device
+	// and so has no shape to compare against. Distinct from DemandUnsatisfiable
+	// on purpose: "it would not fit" and "I do not know what a cell brings" call
+	// for different operator actions.
+	ReasonCellShapeUnknown = "CellShapeUnknown"
 )
 
 // Labels the operator stamps on the objects it owns, in both clusters. They are

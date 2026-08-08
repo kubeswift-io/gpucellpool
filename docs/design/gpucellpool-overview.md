@@ -121,7 +121,7 @@ constraint, and it is a Phase-1 verification item (`-poc.md` R6).
 | D7 | cell `Ready` | outer `SwiftGuest` Running **AND** inner Node Ready **AND** capacity provider reports the expected device count on that node | "no silent failures" — a booted VM whose GPU never surfaced is the exact failure this pool exists to catch |
 | D8 | Cluster API | **A second provisioner, never a replacement.** MVP: `provisioner: SwiftGuest`. Later: `provisioner: ClusterAPI` (MachineDeployment) | CAPI can only add Machines to a **CAPI-managed** workload cluster; the target use case is *bring-your-own* cluster. Also needs GPU fields added to `capi-kubeswift` first |
 | D9 | repo + license | **Separate repo, Apache-2.0, unstructured client to KubeSwift** (no AGPL import), like `capi-kubeswift` | it is a composition layer over two independent projects; the license boundary is the mechanical proof of that claim |
-| D10 | scale-down in v1 | **Not implemented.** `replicas` down = drain-then-delete, *manual trigger only*; autoscaling scale-**up** is Phase 3, automatic scale-down Phase 4 | deleting a cell with live HAMi workloads on it is the one unrecoverable mistake in this architecture |
+| D10 | scale-down | **Shipped, both triggers.** `replicas`/`minReplicas` down = drain-then-delete; `autoscaling.scaleDown: Auto` removes an **idle** cell after a long quiet window. `minReplicas: 0` is allowed, and recoverable because the cell shape is remembered (§8.1 of the capacity doc) | deleting a cell with live HAMi workloads on it is the one unrecoverable mistake in this architecture — so idleness is read from the provider, never inferred, and the drain gate re-checks before the guest goes |
 
 ---
 
@@ -178,7 +178,7 @@ deletion; metrics.
 
 | Postponed | Extension point already in the design |
 |---|---|
-| automatic scale-down | `deletion.policy` + the `Draining` cell state + finalizer + `spec.autoscaling.scaleDown` (Phase 4 flips that enum from Manual to Auto; the value is rejected until then) |
+| ~~automatic scale-down~~ | **shipped**: `spec.autoscaling.scaleDown: Auto` over `deletion.policy` + the `Draining` cell state + finalizer. Only provider-reported **idle** cells are candidates; demand must have been absent for the whole (longer) window; membership removes the cells the autoscaler *named* rather than the highest index, or it would destroy work on cell 2 while cell 0 sat empty. `status.cellDeviceShape` keeps `minReplicas: 0` recoverable |
 | ~~demand-driven scale-up~~ | **shipped**: `spec.autoscaling` + `DecideScale` + `PendingDemand`. Four gates: unread demand, unsatisfiable demand, the ceiling, a saturated cluster — plus a stabilization window, because a cell measured ~14 minutes to Ready and demand does not clear until it is |
 | multi-GPU / NVLink cells | `cell.gpu.count` validated `== 1` in v1alpha1; the GPU intent already carries topology |
 | MIG, overcommit policy | `CapacityProvider` mode enum; MIG is an inner-layer concern that changes only capacity parsing |

@@ -26,6 +26,12 @@ type ScaleInput struct {
 	Demand      capacity.Demand
 	DemandKnown bool
 
+	// ShapeKnown is false when the pool has no idea what device a fresh cell would
+	// bring — neither a live cell nor a remembered shape. Then SatisfiableByOneCell
+	// is meaningless (nothing was compared), so it must not be read as "nothing
+	// fits".
+	ShapeKnown bool
+
 	// FreeGPUs from the outer inventory; nil means unknown.
 	FreeGPUs *int
 
@@ -101,6 +107,14 @@ func DecideScale(in ScaleInput) ScaleDecision {
 	case !in.DemandKnown:
 		return ScaleDecision{Desired: base, Reason: cellsv1alpha1.ReasonCapacityUnknown,
 			Message: "GPU demand could not be read from the workload cluster; not scaling"}
+
+	case !in.ShapeKnown && in.Demand.SatisfiableByOneCell == 0 && in.Demand.PendingRequests > 0:
+		// Nothing was compared, so "none satisfiable" is not a finding. Say what is
+		// actually wrong and what fixes it, rather than blaming the requests.
+		return ScaleDecision{Desired: base, Reason: cellsv1alpha1.ReasonCellShapeUnknown,
+			Message: itoa(in.Demand.PendingRequests) + " GPU request(s) are pending but this pool has " +
+				"never advertised a device, so it cannot tell whether a fresh cell would satisfy them; " +
+				"raise replicas or minReplicas to 1 once so the pool learns its cell shape"}
 
 	case in.Demand.SatisfiableByOneCell == 0 && in.Demand.PendingRequests > 0:
 		// Something is pending, but adding a cell of this shape would not help.
@@ -202,6 +216,43 @@ func stabilizing(as *cellsv1alpha1.AutoscalingSpec, last *metav1.Time, now time.
 		window = as.StabilizationWindow.Duration
 	}
 	return now.Sub(last.Time) < window
+}
+
+// CellShape resolves the device a fresh cell would bring: what the pool advertises
+// right now, and failing that the shape it remembers from when it last had a cell.
+//
+// The fallback is what makes minReplicas: 0 usable. Live capacity is preferred
+// because it is current; the remembered shape is only consulted when there is no
+// live cell to read, which is exactly the scaled-to-zero case.
+func CellShape(c capacity.Capacity, remembered *cellsv1alpha1.CellDeviceShape) *capacity.Device {
+	if live := ReferenceDevice(c); live != nil {
+		return live
+	}
+	if remembered == nil || remembered.MemoryMiB <= 0 {
+		return nil
+	}
+	return &capacity.Device{
+		Model:       remembered.Model,
+		MemoryMiB:   remembered.MemoryMiB,
+		CorePercent: remembered.CorePercent,
+		Healthy:     true,
+	}
+}
+
+// RememberShape converts an observed device into the status form. Returns nil when
+// there is nothing worth remembering, so a bad reading cannot overwrite a good
+// memory with zeros.
+func RememberShape(d *capacity.Device, now time.Time) *cellsv1alpha1.CellDeviceShape {
+	if d == nil || d.MemoryMiB <= 0 {
+		return nil
+	}
+	t := metav1.NewTime(now)
+	return &cellsv1alpha1.CellDeviceShape{
+		Model:        d.Model,
+		MemoryMiB:    d.MemoryMiB,
+		CorePercent:  d.CorePercent,
+		LastObserved: &t,
+	}
 }
 
 // ReferenceDevice derives the device a fresh cell would bring, from what the pool

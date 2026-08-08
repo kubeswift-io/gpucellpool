@@ -239,6 +239,16 @@ func (f *testFixture) getPool() *cellsv1alpha1.GPUCellPool {
 	return &pool
 }
 
+// patchPool mutates the pool spec the way an operator editing the object would.
+func (f *testFixture) patchPool(mutate func(*cellsv1alpha1.GPUCellPool)) {
+	f.t.Helper()
+	pool := f.getPool()
+	mutate(pool)
+	if err := outerClient.Update(context.Background(), pool); err != nil {
+		f.t.Fatalf("update pool: %v", err)
+	}
+}
+
 func (f *testFixture) guests() []unstructured.Unstructured {
 	f.t.Helper()
 	list := &unstructured.UnstructuredList{}

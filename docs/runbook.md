@@ -130,6 +130,7 @@ running work**, and is why it is not the default.
 | Reason | Meaning |
 |---|---|
 | `DemandUnsatisfiable` | pods are pending, but none fits one cell of this pool's shape (two devices, or more memory/compute than one device has). Another cell would change nothing |
+| `CellShapeUnknown` | the pool has never advertised a device, so it cannot tell whether a fresh cell would help. Set `replicas` or `minReplicas` to 1 once; the shape is then remembered in `status.cellDeviceShape` and survives a later scale to zero |
 | `Stabilizing` | a cell was just created; demand does not clear until it is Ready |
 | `AtMaxReplicas` | raise `maxReplicas` |
 | `InsufficientPhysicalGPU` | no free device in the infrastructure cluster |
@@ -137,6 +138,21 @@ running work**, and is why it is not the default.
 
 A pod pending for a non-capacity reason (missing ConfigMap, unpullable image) will
 never trigger a scale-up: it has already been scheduled, so it is not demand.
+
+### The pool will not scale down
+
+`ScalingActive`'s reason again:
+
+| Reason | Meaning |
+|---|---|
+| `AtMinReplicas` | it is already at the floor. `minReplicas: 0` is allowed and safe to use — the pool remembers its cell shape, so it can grow back |
+| `NoIdleCell` | demand is gone but every cell still holds workloads. Not a fault; check `status.workloadCapacity.gpuMemory.allocated` |
+| `Stabilizing` | demand has not been absent for the whole window yet (default 30m, and `status.demandFreeSince` says since when), or a scale action happened inside it |
+| `Unknown` | demand or allocations could not be read. A cell whose allocations cannot be read is never treated as idle — "empty" and "unknown" are different answers |
+
+Scale-down never removes a cell that holds work: idleness comes from the capacity
+provider, and the drain gate re-checks allocations again before the guest is deleted.
+`scaleDown: Auto` requires `minReplicas` to be set explicitly.
 
 ### Capacity numbers look stale
 

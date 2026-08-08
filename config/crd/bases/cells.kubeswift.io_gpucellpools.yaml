@@ -474,6 +474,37 @@ spec:
           status:
             description: GPUCellPoolStatus is the observed state of a GPUCellPool.
             properties:
+              cellDeviceShape:
+                description: |-
+                  CellDeviceShape is the remembered shape of one cell's GPU. It outlives the
+                  cells themselves so that a pool which scaled to zero can still judge whether
+                  a fresh cell would satisfy a pending request.
+                properties:
+                  corePercent:
+                    description: |-
+                      CorePercent is one device's compute, as the percentage the provider
+                      accounts in (100 = a whole device).
+                    format: int64
+                    type: integer
+                  lastObserved:
+                    description: |-
+                      LastObserved is when this shape was last confirmed against a live cell. A
+                      shape older than the pool's cells is still used — it is the best knowledge
+                      available — but the timestamp says how stale it is.
+                    format: date-time
+                    type: string
+                  memoryMiB:
+                    description: MemoryMiB is one device's GPU memory.
+                    format: int64
+                    type: integer
+                  model:
+                    description: Model is the GPU model the provider reported, for
+                      operator recognition.
+                    type: string
+                required:
+                - corePercent
+                - memoryMiB
+                type: object
               cells:
                 description: |-
                   Cells is per-cell state, one entry per owned cell. It is a projection of
