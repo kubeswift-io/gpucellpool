@@ -5,15 +5,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 	"github.com/kubeswift-io/gpucellpool/internal/provisioner"
 )
-
-// unstructuredList is an alias so the reconciler reads cleanly; KubeSwift kinds
-// are always reached unstructured (no AGPL import).
-type unstructuredList = unstructured.UnstructuredList
 
 func clientKey(pool *cellsv1alpha1.GPUCellPool) string {
 	return pool.Namespace + "/" + pool.Spec.WorkloadCluster.KubeconfigSecretRef.Name

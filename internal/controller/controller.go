@@ -864,21 +864,3 @@ func (r *GPUCellPoolReconciler) markDraining(cells []cellsv1alpha1.CellStatus, n
 		}
 	}
 }
-
-// listCellGuests returns the names of this pool's cell guests, from the outer
-// cluster. Label-based rediscovery is what makes the controller stateless.
-func (r *GPUCellPoolReconciler) listCellGuests(ctx context.Context, pool *cellsv1alpha1.GPUCellPool) ([]string, error) {
-	list := &unstructuredList{}
-	list.SetGroupVersionKind(provisioner.SwiftGuestGVK.GroupVersion().WithKind("SwiftGuestList"))
-	if err := r.List(ctx, list,
-		client.InNamespace(pool.Namespace),
-		client.MatchingLabels{cellsv1alpha1.LabelPool: pool.Name},
-	); err != nil {
-		return nil, fmt.Errorf("listing cell guests: %w", err)
-	}
-	names := make([]string, 0, len(list.Items))
-	for i := range list.Items {
-		names = append(names, list.Items[i].GetName())
-	}
-	return names, nil
-}
