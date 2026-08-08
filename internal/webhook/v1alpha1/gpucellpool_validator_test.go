@@ -251,3 +251,37 @@ func TestValidatorEntryPoints(t *testing.T) {
 		t.Errorf("ValidateDelete blocked a deletion: %v", err)
 	}
 }
+
+// A named ResourceClaim is ONE claim and a VFIO device backs one VM, so a pool that
+// can hold more than one cell would double-book the device. V3's justification always
+// said this; the rule never checked it.
+func TestSharedClaimRequiresASingleCell(t *testing.T) {
+	i32 := func(i int32) *int32 { return &i }
+	shared := func() *cellsv1alpha1.GPUCellPool {
+		p := validPool()
+		p.Spec.Replicas = 1
+		p.Spec.Cell.GPU.DRA = &cellsv1alpha1.CellGPUDRASpec{
+			ResourceClaimName: "one-gpu", Tier: "pcie",
+		}
+		return p
+	}
+
+	assertValid(t, shared())
+
+	p := shared()
+	p.Spec.Replicas = 2
+	assertRejected(t, p, "double-book")
+
+	// The ceiling counts too: a pool that can GROW past one cell is the same bug,
+	// just deferred until demand arrives.
+	p = shared()
+	p.Spec.Autoscaling = &cellsv1alpha1.AutoscalingSpec{
+		Enabled: true, MinReplicas: i32(1), MaxReplicas: i32(3),
+	}
+	assertRejected(t, p, "double-book")
+
+	// A claim TEMPLATE mints one claim per cell, so it has no such limit.
+	p = validPool()
+	p.Spec.Replicas = 4
+	assertValid(t, p)
+}

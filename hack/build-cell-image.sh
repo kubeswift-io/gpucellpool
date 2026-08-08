@@ -9,7 +9,7 @@
 # needed at build time — only at cell boot.
 set -euo pipefail
 
-OUT="${OUT:-/tmp/claude-1000/-home-wrkode-code-vmm-kubeswift-kubeswift/c6001214-37be-44cd-ae40-c65efde23337/scratchpad/cellpoc/build}"
+OUT="${OUT:-$PWD/build}"
 # The DISTRO qemu, deliberately: a Kata build (which may come first in PATH at
 # /opt/kata/bin) is compiled without user-mode networking, so the guest gets no
 # egress and the bake dies mid-apt with nothing obviously wrong.
@@ -17,7 +17,9 @@ QEMU="${QEMU:-/usr/bin/qemu-system-x86_64}"
 BIOS="${BIOS:-/usr/share/seabios/bios-256k.bin}"
 BASE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 # Pascal (GTX 1080) needs the PROPRIETARY driver: the open kernel modules are
-# Turing+ only. Keep this pinned and recorded — it is part of the image contract.
+# Turing+ only. Note this metapackage tracks a BRANCH — 570-server resolved to
+# 580.173.02 on the validated build — so the manifest records the version that was
+# actually installed. Pin NVIDIA_DRIVER_PKG to an exact package for reproducibility.
 NVIDIA_DRIVER_PKG="${NVIDIA_DRIVER_PKG:-nvidia-driver-570-server}"
 DISK_SIZE="${DISK_SIZE:-30G}"
 MEM="${MEM:-4096}"

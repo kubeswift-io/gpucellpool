@@ -1,5 +1,9 @@
 # GPUCellPool — failure model
 
+> Design record, written before implementation (2026-07-30) and partially
+> updated. It documents rationale, not current behaviour — see `docs/` for
+> that, in particular `docs/limitations.md` and `docs/runbook.md`.
+
 > A two-layer system fails in two layers, and the dangerous failures are the
 > asymmetric ones: outer success + inner failure (a cell that looks provisioned and
 > is useless), and inner doubt + outer action (deleting infrastructure because a
@@ -151,7 +155,7 @@ boolean:
 | 13 | Workload API unavailable? | Freeze all destructive paths, retain capacity, `WorkloadClusterReachable=False` (rule 2) |
 | 14 | Operations during degraded HAMi? | Create/read/report yes; Ready/count/scale-down/drain-completion no (§5) |
 | 15 | How does CAPI change things? | Adds `cell.provisioner: ClusterAPI`; needs GPU fields in `capi-kubeswift`; only possible for CAPI-managed workload clusters — hence a second provisioner, never a replacement (D8, bootstrap §5) |
-| 16 | What is postponed? | Automatic scale-down, demand-driven scale-up, MIG, multi-GPU cells, overcommit, multi-cluster pools, HAMi install, workload integrations (overview §5) |
+| 16 | What is postponed? | **Automatic scale-down and demand-driven scale-up are SHIPPED, not postponed** (`docs/autoscaling.md`) — this row is stale. Still postponed/not implemented: HAMi DRA capacity mode, MIG, multi-GPU cells, overcommit, multi-cluster pools, HAMi install, workload integrations, automated outer-drain sequencing (overview §5, `docs/limitations.md`) |
 
 ---
 
@@ -175,8 +179,11 @@ boolean:
 - U2 **HAMi annotation format stability** — currently an internal protocol. Should
   the provider pin a supported HAMi version range and refuse newer ones loudly?
   Leaning yes, with an override annotation.
-- U3 **HAMi DRA maturity** — `v0.1.0`, k8s ≥ 1.34. `mode: DRA` should probably ship
-  behind an explicit `experimental` acknowledgement until validated.
+- U3 **HAMi DRA maturity** — `v0.1.0`, k8s ≥ 1.34. **Resolved, more strictly
+  than this question proposed**: `mode: DRA` did not ship behind an
+  experimental flag; it does not ship at all. `internal/capacity`'s DRA path
+  returns `ErrUnsupported` for every operation. `DevicePlugin` is the only
+  implemented mode (`docs/limitations.md`).
 - U4 **Preflight reporting from inside the guest** (bootstrap §7.3).
 - U5 **Cell replacement policy on GPU-absent failures** (scenario 6): replace-once
   is a guess; the real number comes from Phase 1/2 experience.

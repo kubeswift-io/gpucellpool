@@ -1,5 +1,11 @@
 # GPUCellPool — reconciliation, identity, RBAC, deletion
 
+> Design record, written before implementation (2026-07-30) and partially
+> updated. It documents rationale, not current behaviour — see `docs/` for
+> that, in particular `docs/api-reference.md` and `docs/autoscaling.md`.
+> Several "v1"/"later phase" markers below are now stale — scale-down and
+> demand-driven scale-up are both shipped; see the inline corrections.
+
 > One controller, two clusters, one cached client per pool. Every state is derived
 > from cluster objects, never from controller memory — the reconciler must survive
 > a restart with no bookkeeping.
@@ -19,7 +25,7 @@
 | `PhysicalInventory` | free/held GPUs from outer `ResourceSlice` + `ResourceClaim` | allocate anything |
 | `WorkloadClusterClient` | one cached, scoped client + informers per kubeconfig; Node get/label/cordon/drain | interpret GPU capacity |
 | `CapacityProvider` (iface) | HAMi device/memory/core capacity from inner objects | write to the inner cluster |
-| `ScalingPolicy` | `desiredCells` (v1: `= spec.replicas`) | delete cells directly |
+| `ScalingPolicy` | `desiredCells` — **shipped as `DecideScale`**, static (`= spec.replicas`) or demand-driven (`spec.autoscaling`, both directions); see `docs/autoscaling.md` | delete cells directly |
 
 `CellProvisioner` mirrors KubeSwift's own `gpualloc.Backend` seam — two phases,
 one struct as the contract:
@@ -149,12 +155,15 @@ cells.kubeswift.io/instance  = <outer guest UID>
         unreachable → set WorkloadClusterReachable=False,
                       SUSPEND all destructive decisions, requeue, return
 4  list owned cells (outer objects by label) → reconstruct status.cells[]
-5  desired = ScalingPolicy.Desired(pool)          // v1: spec.replicas
+5  desired = ScalingPolicy.Desired(pool)          // DecideScale: spec.replicas,
+                                                   // or the autoscaler's decision
 6  reconcile membership
      create   while len(cells) < desired  and  inFlight < maxCreating(=2)
                                           and  PhysicalGPUsAvailable
      replace  Failed cells, per-index exponential backoff (30s→30m, capped)
-     drain    while len(cells) > desired: pick highest index → Draining  [manual only in v1]
+     drain    while len(cells) > desired: pick highest index (operator-driven
+              shrink) OR the autoscaler's named idle cells (scaleDown: Auto)
+              → Draining
 7  advance each cell's FSM (§2) using outer + inner reads
 8  reap stale inner Nodes (identity mismatch, or cell gone) → §3
 9  ensure inner Node labels/annotations/taints match spec.workloadCluster.node
@@ -209,6 +218,20 @@ Invariants:
 
 ## 6. RBAC
 
+The two role manifests below are the design draft. **The shipped roles are
+`config/rbac/role.yaml`** (outer) **and `config/rbac/workload-cluster-observer.yaml`**
+(inner) — read those for ground truth; this section is kept for the reasoning.
+Notable drift from the draft: the shipped outer role additionally grants
+`cluster.x-k8s.io/clusters`, `cluster.x-k8s.io/machines` and
+`infrastructure.cluster.x-k8s.io/kubeswiftmachines` (all
+create/delete/get/list/patch/update/watch except `clusters`, which is read-only)
+plus `bootstrap.cluster.x-k8s.io/*` — needed once `provisioner: ClusterAPI`
+shipped (§1, `docs/clusterapi-cells.md`) and absent from the draft below because
+it predates that provisioner. The shipped inner role grants `nodes: delete` as
+an **always-on** right, not a Phase-4/drain-only one (see the correction after
+the inner block) and has no `KubeadmToken`-only block, because that bootstrap
+provider was never implemented (`docs/limitations.md`).
+
 ### Outer (management) cluster — the operator's own ServiceAccount
 
 ```yaml
@@ -234,50 +257,67 @@ rules:
   - apiGroups: [coordination.k8s.io]
     resources: [leases]
     verbs: [get, create, update]                 # leader election
+  # ClusterAPI provisioner only (shipped after this draft was written — see
+  # config/rbac/role.yaml for the exact, generated rules):
+  - apiGroups: [cluster.x-k8s.io]
+    resources: [clusters]
+    verbs: [get, list, watch]
+  - apiGroups: [cluster.x-k8s.io]
+    resources: [machines]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [infrastructure.cluster.x-k8s.io]
+    resources: [kubeswiftmachines]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [bootstrap.cluster.x-k8s.io]
+    resources: ["*"]
+    verbs: [get, list, watch, create, update, patch, delete]
 ```
 
-Note what is **absent**: no `pods`, no `nodes`, no `swiftgpuprofiles` write, no
-`resourceclaims` write. The operator never allocates a GPU — KubeSwift and the
-scheduler do.
+Note what is still **absent**: no `pods`, no `nodes`, no `swiftgpuprofiles`
+write, no `resourceclaims` write. The operator never allocates a GPU —
+KubeSwift and the scheduler do.
 
 ### Inner (workload) cluster — the credential in `kubeconfigSecretRef`
 
-Minimum for the MVP; every verb has a named consumer:
+Every verb has a named consumer:
 
 ```yaml
 # ClusterRole gpu-cell-pool-observer
 - apiGroups: [""]
   resources: [nodes]
-  verbs: [get, list, watch]                      # correlation, readiness
-- apiGroups: [""]
-  resources: [nodes]
-  verbs: [patch, update]                         # identity labels, taints, cordon
+  verbs: [get, list, watch, patch, update, delete]
+  # DELETE IS ALWAYS-ON, NOT A DRAIN/PHASE-4 FEATURE — the draft below marked
+  # it Phase-4-only; that was wrong even before scale-down shipped. Two paths
+  # unconditionally need it: reaping a stale Node left by a replaced cell
+  # (§3, §8), and removing a cell's Node when the cell itself is deleted.
+  # Without it every teardown fails Forbidden and stale Nodes accumulate.
 - apiGroups: [""]
   resources: [pods]
   verbs: [get, list, watch]                      # HAMi DevicePlugin accounting
 - apiGroups: [resource.k8s.io]
   resources: [resourceslices, resourceclaims]
   verbs: [get, list, watch]                      # HAMi DRA accounting
-# Phase 4 only (drain):
-- apiGroups: [""]
-  resources: [pods/eviction]
-  verbs: [create]
-- apiGroups: [""]
-  resources: [nodes]
-  verbs: [delete]                                # remove the Node of a deleted cell
-# KubeadmToken bootstrap mode only, scoped by resourceNames prefix if the
-# distribution permits it:
-- apiGroups: [""]
-  resources: [secrets]
-  verbs: [create, get, update, delete]           # kube-system bootstrap tokens
 ```
 
-`cluster-admin` is never required. The three privilege escalations to be conscious
-of are `nodes/patch` (can cordon/label any node), `pods/eviction` (Phase 4), and
-bootstrap-token creation (Phase-dependent, and the reason `Opaque` is the default
-provider — see `-bootstrap.md` §5). Ship a ready-made
-`ClusterRole`+`ServiceAccount`+token manifest so operators do not hand over an
-admin kubeconfig out of convenience.
+Deliberately absent, both permanently: `pods/eviction` (the operator waits for
+a cell's GPU to be released rather than evicting workloads to force it empty —
+drain with `kubectl` if you need a cell emptied faster) and any `secrets`
+write in the workload cluster (the `KubeadmToken` bootstrap provider that
+would have needed it was never implemented — see `docs/limitations.md`).
+
+`cluster-admin` is never required. `nodes/patch`+`delete` (can cordon/label/
+remove any node in the workload cluster) is the one privilege escalation to be
+conscious of, since it is the broadest grant here — it is why the shipped
+`config/rbac/workload-cluster-observer.yaml` is a separate, minimal manifest
+rather than something operators are expected to hand-write, and why the
+default `Opaque` bootstrap provider (`-bootstrap.md` §5) needs no
+bootstrap-token-minting rights at all (`pods/eviction` and bootstrap-token
+creation, both once planned as later-phase grants here, were never needed:
+the former because the operator never evicts, the latter because
+`KubeadmToken` bootstrap was never implemented — `docs/limitations.md`). Ship
+a ready-made `ClusterRole`+`ServiceAccount`+token manifest so operators do not
+hand over an admin kubeconfig out of convenience — `config/rbac/
+workload-cluster-observer.yaml` is exactly that.
 
 ---
 
@@ -337,23 +377,30 @@ Nothing lives in memory. On startup, for each pool:
 
 ## 9. Metrics
 
-Prefix `gpucell_`, one namespace for both levels, `pool` label everywhere (the
-brief's `gpucellpool_*`/`gpucell_*` split is noise):
+Prefix `gpucell_`, one namespace for both levels. **Every metric actually
+shipped carries `{pool, namespace}`, not just `{pool}`** as drafted below — a
+pool name is only unique within a namespace, and the draft's label sets were
+written before that was caught. See `internal/metrics/metrics.go` and
+`docs/runbook.md` for the ground truth (twelve metrics, one more than drafted
+here: `scale_decisions_total` was added with autoscaling):
 
 ```
-gpucell_cells_desired{pool}                     gauge
-gpucell_cells{pool,phase}                       gauge   # Ready|Booting|Joining|Awaiting…|Draining|Failed
-gpucell_cell_startup_seconds{pool}              histogram  # Pending→Ready
-gpucell_cell_transitions_total{pool,from,to}    counter
-gpucell_physical_gpus{pool,state}               gauge   # held|free-in-cluster
-gpucell_capacity_gpu_devices{pool}              gauge
-gpucell_capacity_gpu_memory_bytes{pool,state}   gauge   # total|allocated|available
-gpucell_capacity_gpu_compute_percent{pool,state} gauge
-gpucell_capacity_scrape_errors_total{pool,reason} counter
-gpucell_workload_cluster_reachable{pool}        gauge   # 1|0
-gpucell_reconcile_errors_total{pool,reason}     counter
+gpucell_cells_desired{pool,namespace}                       gauge
+gpucell_cells{pool,namespace,phase}                         gauge   # Ready|Booting|Joining|Awaiting…|Draining|Failed
+gpucell_cell_startup_seconds{pool,namespace}                histogram  # creation→first Ready
+gpucell_cell_transitions_total{pool,namespace,from,to}      counter
+gpucell_physical_gpus{pool,namespace,state}                 gauge   # held|free-in-cluster
+gpucell_capacity_gpu_devices{pool,namespace}                gauge
+gpucell_capacity_gpu_memory_bytes{pool,namespace,state}     gauge   # total|allocated|available
+gpucell_capacity_gpu_compute_percent{pool,namespace,state}  gauge
+gpucell_capacity_scrape_errors_total{pool,namespace,reason} counter
+gpucell_workload_cluster_reachable{pool,namespace}          gauge   # 1|0
+gpucell_scale_decisions_total{pool,namespace,reason,scaled_up} counter
+gpucell_reconcile_errors_total{pool,namespace}              counter
 ```
 
-`gpucell_cell_startup_seconds` is the number that decides whether Phase 3
-autoscaling is worth building: if a cell takes 12 minutes to become Ready,
-demand-driven scale-up is a capacity planner, not an autoscaler.
+`gpucell_cell_startup_seconds` is the number that decides whether
+demand-driven autoscaling is worth using reactively: at the measured ~4m45s
+(`-bootstrap.md` §6) it is workable with the default 10-minute stabilization
+window; a cell in the range this draft worried about (12+ minutes) would make
+scale-up a capacity planner rather than an autoscaler.

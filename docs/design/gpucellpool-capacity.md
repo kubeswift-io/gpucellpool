@@ -1,5 +1,9 @@
 # GPUCellPool — capacity discovery
 
+> Design record, written before implementation (2026-07-30) and partially
+> updated. It documents rationale, not current behaviour — see `docs/` for
+> that, in particular `docs/concepts.md` and `docs/autoscaling.md`.
+
 > Two capacities, never merged: **physical** (outer, KubeSwift/DRA — whole devices)
 > and **workload** (inner, HAMi — memory + core fractions). One internal
 > `CapacityProvider` interface isolates HAMi so its churn cannot reach the CRD (D5).
@@ -297,20 +301,23 @@ Measured note that shaped this: HAMi refuses an over-large request at SCHEDULING
 time ("0/1 nodes are available: 1 NodeUnfitPod"), so over-large requests do show up
 as unschedulable pods and the second gate is what stops them driving a scale-up.
 
-DRA mode still returns `ErrUnsupported`.
+DRA mode still returns `ErrUnsupported` — that half of the design intent below
+remains just intent. The DevicePlugin half shipped, described above.
 
-The original design intent, kept for the DRA implementation:
+The original design intent, still outstanding for the DRA implementation:
 
-- **DRA mode is the good signal**: a `ResourceClaim` in `WaitingForFirstConsumer`/
-  unallocated state whose `deviceClassName` is the pool's HAMi class, with
-  `capacity.requests` that **would fit** on a fresh cell but fits nowhere now. That
-  is unambiguous GPU-capacity demand.
-- **DevicePlugin mode is the weak signal**: pending Pods requesting
+- **DRA mode would be the good signal**: a `ResourceClaim` in
+  `WaitingForFirstConsumer`/unallocated state whose `deviceClassName` is the
+  pool's HAMi class, with `capacity.requests` that **would fit** on a fresh
+  cell but fits nowhere now. That is unambiguous GPU-capacity demand — and
+  unimplemented (`docs/limitations.md`).
+- **DevicePlugin mode is the weak signal — SHIPPED**: pending Pods requesting
   `nvidia.com/gpu`+`gpumem` whose `PodScheduled=False` reason is
-  `Unschedulable`/`FailedScheduling` mentioning the HAMi resources.
+  `Unschedulable`. This is what §8 above describes.
 - Both must pass two filters before any cell is created:
   `demand is GPU-capacity-constrained` **AND** `a fresh cell of this pool's shape
   would satisfy it`. A Pod pending on a missing ConfigMap, a wrong nodeSelector, an
   impossible model, or a request larger than one cell's whole GPU must **never**
-  create a cell. That check is the entire safety of Phase 3, which is why it is
-  designed here and shipped later.
+  create a cell. That check is the entire safety of the feature, which is why it
+  was designed here before either mode shipped. See `docs/autoscaling.md` for
+  the user-facing view of the shipped (DevicePlugin) behaviour.

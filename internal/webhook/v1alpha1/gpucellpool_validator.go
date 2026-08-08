@@ -76,6 +76,7 @@ func Validate(pool, old *cellsv1alpha1.GPUCellPool) field.ErrorList {
 	errs = append(errs, validateProvisioner(spec.Child("cell"), pool)...)
 
 	errs = append(errs, validateGPU(spec.Child("cell", "gpu"), pool.Spec.Cell.GPU)...)
+	errs = append(errs, validateSharedClaimIsSingleCell(spec, pool)...)
 	errs = append(errs, validateTemplate(spec.Child("cell"), pool)...)
 	errs = append(errs, validateBootstrap(spec.Child("bootstrap"), pool)...)
 	errs = append(errs, validateWorkloadCluster(spec.Child("workloadCluster"), pool.Spec.WorkloadCluster)...)
@@ -140,6 +141,34 @@ func validateGPU(p *field.Path, gpu cellsv1alpha1.CellGPUSpec) field.ErrorList {
 	default:
 		errs = append(errs, field.NotSupported(p.Child("backend"), backend,
 			[]string{cellsv1alpha1.GPUBackendDRA, cellsv1alpha1.GPUBackendNative}))
+	}
+	return errs
+}
+
+// validateSharedClaimIsSingleCell enforces what V3's justification always said but
+// the rule never checked: a named ResourceClaim is ONE claim, a VFIO device backs
+// exactly one running VM, so N cells sharing it double-book the device.
+//
+// The XOR between the two references was enforced; the pairing with the replica count
+// was not, so `resourceClaimName` with `replicas: 2` was admitted and the second cell
+// contended for a device the first one held. Use resourceClaimTemplateName for any
+// pool that can grow — the template mints a claim per cell.
+func validateSharedClaimIsSingleCell(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.ErrorList {
+	dra := pool.Spec.Cell.GPU.DRA
+	if dra == nil || dra.ResourceClaimName == "" {
+		return nil
+	}
+	const why = "a named resourceClaimName is a single claim and a VFIO device backs one VM, " +
+		"so more than one cell would double-book it; use resourceClaimTemplateName instead"
+
+	var errs field.ErrorList
+	if pool.Spec.Replicas > 1 {
+		errs = append(errs, field.Invalid(p.Child("replicas"), pool.Spec.Replicas, why))
+	}
+	if as := pool.Spec.Autoscaling; as != nil && as.Enabled &&
+		as.MaxReplicas != nil && *as.MaxReplicas > 1 {
+		errs = append(errs, field.Invalid(p.Child("autoscaling", "maxReplicas"),
+			*as.MaxReplicas, why))
 	}
 	return errs
 }

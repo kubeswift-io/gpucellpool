@@ -24,6 +24,10 @@ boundary; HAMi owns GPU → workload allocation; this operator owns the lifecycl
 between them. A HAMi fraction is never handed to VFIO — the two layers nest, they
 do not translate.
 
+This is **layered isolation**, not tenant isolation: a cell is a VM boundary
+around the GPU, not a hard security perimeter, and every KubeSwift launcher pod
+is privileged in the infrastructure cluster — see `docs/security.md`.
+
 ## Status
 
 **v0.1.0 — alpha.** Every capability has been run on real hardware: one physical GPU
@@ -65,6 +69,7 @@ spec:
 
 ```bash
 helm install gpucellpool oci://ghcr.io/kubeswift-io/charts/gpucellpool \
+  --version 0.1.0 \
   --namespace gpucellpool-system --create-namespace
 ```
 
@@ -85,22 +90,19 @@ privileged in the infrastructure cluster.
 
 | | |
 |---|---|
-| infrastructure cluster | KubeSwift ≥ v0.13.4, a GPU node (`kubeswift.io/gpu-node=true`), a `DeviceClass` for VFIO GPUs |
+| infrastructure cluster | KubeSwift ≥ v0.13.4, a GPU node (`kubeswift.io/gpu-node=true`), a `DeviceClass` + `ResourceClaimTemplate` for VFIO GPUs, Multus + a NAD carrying a routable address, a `SwiftGuestClass` for the cell VM |
 | workload cluster | HAMi installed, reachable from the operator, and reachable **both ways** for kubelet (cells need a routable interface, not just egress) |
 | cell image | a `SwiftImage` with the NVIDIA driver, containerd + CDI, and your distribution's node binaries |
 
+Budget **~5 minutes** for a first cell to go `Pending` → `Ready` — most of it is
+cloning the root disk, not booting. See `docs/quickstart.md`.
+
 ## Documentation
 
-| Doc | Contents |
-|---|---|
-| [overview](docs/design/gpucellpool-overview.md) | architecture, decisions, scope, phases |
-| [api](docs/design/gpucellpool-api.md) | the v1alpha1 CRD and its validation rules |
-| [reconciliation](docs/design/gpucellpool-reconciliation.md) | cell state machine, identity, RBAC, deletion |
-| [bootstrap](docs/design/gpucellpool-bootstrap.md) | cell image strategy, join credentials |
-| [capacity](docs/design/gpucellpool-capacity.md) | how HAMi capacity is read |
-| [failure-model](docs/design/gpucellpool-failure-model.md) | what breaks and what the operator does about it |
-| [poc](docs/design/gpucellpool-poc.md) | hardware proof and test strategy |
-| [runbook](docs/runbook.md) | what to check when a pool misbehaves |
+Start at [`docs/README.md`](docs/README.md) — it separates operator-facing
+docs (quickstart, concepts, API reference, networking, security, autoscaling,
+runbook) from the design record (`docs/design/`, decisions and rationale, kept
+for history rather than as the current spec).
 
 ## Licence
 

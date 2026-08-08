@@ -15,9 +15,9 @@ import (
 // POLICY. They never mix (design principle 9.3).
 type GPUCellPoolSpec struct {
 	// Replicas is the desired number of cells. Scaled via the scale subresource,
-	// so `kubectl scale` and an HPA both work. Autoscaling (min/max, demand
-	// signals) is a later phase and will arrive as a separate `autoscaling` block
-	// rather than by changing this field.
+	// so `kubectl scale` and an HPA both work. When spec.autoscaling is enabled it
+	// overrides this: the pool then aims for status.desiredReplicas, and replicas
+	// acts as the default floor.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=1
 	Replicas int32 `json:"replicas"`
@@ -26,7 +26,14 @@ type GPUCellPoolSpec struct {
 	Cell CellSpec `json:"cell"`
 
 	// Bootstrap describes how a cell becomes a worker of the workload cluster.
-	Bootstrap BootstrapSpec `json:"bootstrap"`
+	//
+	// Optional because it is genuinely unused when the workload cluster's own Cluster
+	// API bootstrap provider supplies the join data (cell.clusterAPI.
+	// bootstrapConfigTemplateRef). Requiring it there forced an empty `bootstrap: {}`
+	// into the manifest to satisfy the schema — a field you must write and nothing
+	// reads. The webhook still requires joinSecretRef whenever it IS the join path.
+	// +optional
+	Bootstrap BootstrapSpec `json:"bootstrap,omitempty"`
 
 	// WorkloadCluster is the cluster the cells join and where HAMi runs.
 	WorkloadCluster WorkloadClusterSpec `json:"workloadCluster"`
@@ -36,7 +43,8 @@ type GPUCellPoolSpec struct {
 	Capacity CapacitySpec `json:"capacity,omitempty"`
 
 	// Autoscaling, when enabled, lets unsatisfiable GPU demand in the WORKLOAD
-	// cluster create cells. Scale-UP only in v1alpha1 (see AutoscalingSpec).
+	// cluster create cells, and lets idle cells be removed again (see
+	// AutoscalingSpec).
 	// +optional
 	Autoscaling *AutoscalingSpec `json:"autoscaling,omitempty"`
 
@@ -48,18 +56,20 @@ type GPUCellPoolSpec struct {
 // Scale-down modes.
 const (
 	// ScaleDownManual leaves shrinking to the operator: change spec.replicas (or
-	// minReplicas) and the drain path runs. The default, and the only supported
-	// value in v1alpha1.
+	// minReplicas) and the drain path runs. The default.
 	ScaleDownManual = "Manual"
-	// ScaleDownAuto lets the pool shrink itself. Not implemented: destroying
-	// someone's running work on a heuristic is the one unrecoverable mistake in
-	// this architecture, so it is a separate phase with its own evidence.
+	// ScaleDownAuto lets the pool shrink itself, and is deliberately conservative
+	// because destroying someone's running work is the one unrecoverable mistake in
+	// this architecture: only cells the capacity provider reports as IDLE are
+	// candidates, demand must have been absent for the whole window, and the drain
+	// gate re-checks allocations again before the cell is removed. Requires
+	// MinReplicas to be set.
 	ScaleDownAuto = "Auto"
 )
 
 // AutoscalingSpec turns unsatisfiable GPU demand into cells.
 //
-// Only scale-UP is implemented. Two filters gate every decision, and they are the
+// Both directions are implemented. Two filters gate every decision, and they are the
 // entire safety of the feature: the demand must be GPU-capacity-constrained, AND a
 // fresh cell of THIS pool's shape must actually satisfy it. A pod pending on a
 // missing ConfigMap, a wrong nodeSelector, an impossible GPU model, or a request
@@ -83,10 +93,10 @@ type AutoscalingSpec struct {
 	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 
 	// StabilizationWindow is how long to wait after a scale-up before scaling up
-	// again. A cell takes minutes to become Ready (measured: ~14 minutes with
-	// install-at-boot, less with a baked image), and demand does not clear until
-	// it does — so without this window one burst of pending pods creates a cell
-	// per reconcile.
+	// again. A cell takes minutes to become Ready (measured: 4m45s from a baked
+	// image, about three minutes of which is cloning the root disk), and demand does
+	// not clear until it does — so without this window one burst of pending pods
+	// creates a cell per reconcile.
 	// +kubebuilder:default="10m"
 	// +optional
 	StabilizationWindow *metav1.Duration `json:"stabilizationWindow,omitempty"`
@@ -116,10 +126,11 @@ type AutoscalingSpec struct {
 // CellSpec is the shape of a single cell.
 type CellSpec struct {
 	// Provisioner creates the outer objects for a cell.
-	//   SwiftGuest: create a KubeSwift SwiftGuest directly (the only mode today).
-	//   ClusterAPI: size a MachineDeployment (later phase; requires a CAPI-managed
-	//               workload cluster, so it is an additional mode, never a
-	//               replacement).
+	//   SwiftGuest: create a KubeSwift SwiftGuest directly.
+	//   ClusterAPI: create one Cluster API Machine + KubeSwiftMachine per cell, so
+	//               the cell is a member of a CAPI-managed cluster. An additional
+	//               mode, never a replacement: CAPI can only add Machines to a
+	//               cluster it already manages.
 	// +kubebuilder:validation:Enum=SwiftGuest;ClusterAPI
 	// +kubebuilder:default=SwiftGuest
 	// +optional
@@ -297,17 +308,18 @@ const (
 	// BootstrapProviderOpaque uses user-supplied cloud-init verbatim (with a
 	// small, closed substitution set). Makes no assumption about the workload
 	// distribution — k0s, kubeadm, RKE2 and k3s all work.
+	// It is the only provider. A KubeadmToken provider that mints TTL'd join
+	// tokens per cell was specified and is NOT implemented; it was removed from
+	// the enum rather than left accepted, because a value the apiserver admits and
+	// the controller ignores fails silently — and did: it passed admission and
+	// then errored about the provider the user had not selected.
 	BootstrapProviderOpaque = "Opaque"
-	// BootstrapProviderKubeadmToken mints a TTL'd bootstrap token in the
-	// workload cluster per cell. Kubeadm-style clusters only; needs Secret
-	// write rights in kube-system.
-	BootstrapProviderKubeadmToken = "KubeadmToken"
 )
 
 // BootstrapSpec describes how a cell VM joins the workload cluster.
 type BootstrapSpec struct {
-	// Provider selects the join-credential mechanism.
-	// +kubebuilder:validation:Enum=Opaque;KubeadmToken
+	// Provider selects the join-credential mechanism. Opaque is the only value.
+	// +kubebuilder:validation:Enum=Opaque
 	// +kubebuilder:default=Opaque
 	// +optional
 	Provider string `json:"provider,omitempty"`
