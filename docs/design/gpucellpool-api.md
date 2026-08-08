@@ -68,7 +68,7 @@ spec:
   replicas: 2
 
   cell:
-    provisioner: SwiftGuest              # SwiftGuest | ClusterAPI(Phase 5)  [D8]
+    provisioner: SwiftGuest              # SwiftGuest | ClusterAPI  [D8]
     guestTemplate:                       # opaque SwiftGuestSpec; see §4 contract
       guestClassRef: {name: gpu-worker-32c-128g}
       imageRef:      {name: gpu-worker-noble-570}
@@ -399,10 +399,12 @@ compute truth (`-capacity.md` §5).
 | V8 | `capacity.hami.mode: DRA` ⇒ `deviceClassName` set | no way to find the slices otherwise |
 | V9 | all refs resolve in the pool's namespace | no cross-namespace secret reads |
 | V10 | `replicas` may only decrease when `WorkloadClusterReachable=True` | never scale down blind (D10) |
-| V11 | `cell.provisioner: ClusterAPI` rejected in v1alpha1 | Phase 5; the enum exists so the field is not breaking later |
+| V11a | `cell.provisioner: ClusterAPI` ⇒ `cell.clusterAPI` set; `SwiftGuest` ⇒ it is NOT set | the mode and its configuration must agree, and a cell must know which CAPI Cluster it joins |
+| V11b | under `ClusterAPI`, `guestTemplate` may only use `imageRef`, `guestClassRef`, `interfaces` | a KubeSwiftMachine cannot express the rest, so anything else would be SILENTLY DROPPED — a cell booting with less than asked for |
+| V11c | `clusterAPI.bootstrapConfigTemplateRef.kind` ends in `Template` | the per-cell object's kind is the template's kind minus the suffix; without it the operator would create another template |
 | V12 | `cell.nodeIPFrom` names an interface present in `guestTemplate.interfaces` | otherwise kubelet binds the wrong address |
 
-V10 is an update-only rule; V1–V9, V11, V12 fire on create and update. Per
+V10 is an update-only rule; V1–V9, V11a–c, V12 fire on create and update. Per
 KubeSwift's discipline: each rule states which operations it fires on, and the
 webhook never defaults-to-everything.
 

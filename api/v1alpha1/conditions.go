@@ -84,6 +84,11 @@ const (
 	ReasonAtMinReplicas       = "AtMinReplicas"
 	ReasonNoIdleCell          = "NoIdleCell"
 
+	// ReasonUnknownProvisioner means spec.cell.provisioner names something this
+	// build cannot create. It is an event rather than a silent fallback: the field
+	// decides what objects appear in the infrastructure cluster.
+	ReasonUnknownProvisioner = "UnknownProvisioner"
+
 	// ReasonScaledToZero marks a pool that deliberately holds no cells, so that an
 	// empty-by-design pool is not reported as a broken one.
 	ReasonScaledToZero = "ScaledToZero"

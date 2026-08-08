@@ -221,6 +221,55 @@ spec:
               cell:
                 description: 'Cell describes one cell: the VM shape and its GPU.'
                 properties:
+                  clusterAPI:
+                    description: |-
+                      ClusterAPI configures the ClusterAPI provisioner. Required when
+                      provisioner is ClusterAPI, and rejected otherwise.
+                    properties:
+                      bootstrapConfigTemplateRef:
+                        description: |-
+                          BootstrapConfigTemplateRef names a CAPI bootstrap config TEMPLATE (e.g. a
+                          KubeadmConfigTemplate) that the operator instantiates once per cell, the way
+                          a MachineSet does. This is the reason to use CAPI at all: the join
+                          credential, CA hashes and cluster config come from the cluster's own
+                          bootstrap provider rather than from a secret somebody pasted.
+
+                          Leave it unset to use spec.bootstrap instead — the per-cell rendered Secret
+                          is then handed to the Machine as bootstrap.dataSecretName. That works, but
+                          you own keeping the join data valid.
+                        properties:
+                          apiGroup:
+                            description: APIGroup is e.g. "bootstrap.cluster.x-k8s.io".
+                            minLength: 1
+                            type: string
+                          kind:
+                            description: Kind is e.g. "KubeadmConfigTemplate".
+                            minLength: 1
+                            type: string
+                          name:
+                            description: Name is the template object's name in the
+                              pool's namespace.
+                            minLength: 1
+                            type: string
+                        required:
+                        - apiGroup
+                        - kind
+                        - name
+                        type: object
+                      clusterName:
+                        description: ClusterName is the CAPI Cluster, in the pool's
+                          namespace, that cells join.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                      version:
+                        description: |-
+                          Version is the Kubernetes version stamped on each Machine
+                          (Machine.spec.version), which bootstrap providers use to pick the kubelet.
+                        type: string
+                    required:
+                    - clusterName
+                    type: object
                   gpu:
                     description: GPU is the cell's physical GPU request.
                     properties:

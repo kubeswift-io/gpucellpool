@@ -38,6 +38,11 @@ func NewSwiftGuestProvisioner(c client.Client) *SwiftGuestProvisioner {
 // Name implements Provisioner.
 func (p *SwiftGuestProvisioner) Name() string { return ProvisionerSwiftGuest }
 
+// List implements Provisioner: the cell guests labelled for this pool.
+func (p *SwiftGuestProvisioner) List(ctx context.Context, namespace, pool string) ([]string, error) {
+	return listCellNames(ctx, p.Client, SwiftGuestGVK, namespace, pool)
+}
+
 // Ensure implements Provisioner.
 func (p *SwiftGuestProvisioner) Ensure(ctx context.Context, req CellRequest) (OuterState, error) {
 	if err := p.ensureSeedProfile(ctx, req); err != nil {
@@ -91,15 +96,7 @@ func (p *SwiftGuestProvisioner) ClearDrainFinalizer(ctx context.Context, req Cel
 		return fmt.Errorf("reading SwiftGuest %s: %w", req.CellName, err)
 	}
 
-	kept := make([]string, 0, len(guest.GetFinalizers()))
-	found := false
-	for _, f := range guest.GetFinalizers() {
-		if f == cellsv1alpha1.FinalizerCellDrain {
-			found = true
-			continue
-		}
-		kept = append(kept, f)
-	}
+	kept, found := withoutDrainFinalizer(guest.GetFinalizers())
 	if !found {
 		return nil
 	}

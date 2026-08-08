@@ -24,8 +24,14 @@ const (
 	KeyExpectedGPUs    = "expectedGPUs"
 )
 
-// SecretKey is the key the rendered cloud-init is stored under.
+// SecretKey is the key the rendered cloud-init is stored under, which is what
+// KubeSwift's SwiftSeedProfile reads.
 const SecretKey = "user-data"
+
+// CAPISecretKey is the key Cluster API reads bootstrap data from when a Machine
+// names a Secret directly (spec.bootstrap.dataSecretName). The per-cell Secret
+// carries the same bytes under both keys so either provisioner can consume it.
+const CAPISecretKey = "value"
 
 // Values are the per-cell substitutions.
 //

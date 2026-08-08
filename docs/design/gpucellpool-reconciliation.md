@@ -28,6 +28,13 @@ one struct as the contract:
 type CellProvisioner interface {
 	Name() string // "SwiftGuest" | "ClusterAPI"
 
+	// List names the cells this provisioner owns, read from live objects. It is
+	// part of the interface because the object that REPRESENTS a cell differs per
+	// mode — a SwiftGuest in one, a Cluster API Machine in the other. (Shipped as
+	// a hard-coded SwiftGuest list first; the ClusterAPI harness found that
+	// immediately, as a pool that created Machines and then discovered no cells.)
+	List(ctx context.Context, namespace, pool string) ([]string, error)
+
 	// Ensure is idempotent: create the outer objects for this cell if absent,
 	// then report what is observable. It never blocks.
 	Ensure(ctx context.Context, c CellRequest) (OuterState, error)

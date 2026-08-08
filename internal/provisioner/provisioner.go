@@ -15,6 +15,8 @@ import (
 	"context"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 )
 
 // Provisioner names.
@@ -56,6 +58,10 @@ type CellRequest struct {
 
 	// SpreadPolicy is "Spread" or "Pack" (see CellSpec.SpreadPolicy).
 	SpreadPolicy string
+
+	// ClusterAPI is spec.cell.clusterAPI, present only for the ClusterAPI
+	// provisioner. The SwiftGuest provisioner ignores it.
+	ClusterAPI *cellsv1alpha1.CellClusterAPISpec
 
 	TemplateHash string
 	OwnerRefs    []metav1.OwnerReference
@@ -125,10 +131,27 @@ type OuterState struct {
 	UID string
 }
 
+// DrainFinalizerClearer is implemented by provisioners that stamp the cell-drain
+// finalizer on the object they create. It is separate from Provisioner because
+// only the reconciler may clear it, and only once the workload side is drained —
+// keeping it off the main interface makes that hard to call by accident.
+type DrainFinalizerClearer interface {
+	ClearDrainFinalizer(ctx context.Context, req CellRequest) error
+}
+
 // Provisioner creates, observes and removes the outer objects for one cell.
 type Provisioner interface {
 	// Name is "SwiftGuest" or "ClusterAPI".
 	Name() string
+
+	// List returns the names of the cells this provisioner currently owns for a
+	// pool, read from live objects in the infrastructure cluster.
+	//
+	// Discovery belongs here because the object that REPRESENTS a cell differs per
+	// mode — a SwiftGuest in one, a Cluster API Machine in the other — and a
+	// reconciler that listed only one kind would silently see no cells at all in
+	// the other mode.
+	List(ctx context.Context, namespace, pool string) ([]string, error)
 
 	// Ensure is idempotent: it creates the cell's outer objects if absent and
 	// reports what is observable. It never blocks and never waits.

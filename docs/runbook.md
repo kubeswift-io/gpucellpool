@@ -154,6 +154,33 @@ Scale-down never removes a cell that holds work: idleness comes from the capacit
 provider, and the drain gate re-checks allocations again before the guest is deleted.
 `scaleDown: Auto` requires `minReplicas` to be set explicitly.
 
+### The pool creates Machines but no cells appear in status
+
+Only with `provisioner: ClusterAPI`. Cells are discovered by listing **Machines**
+labelled `cells.kubeswift.io/pool=<pool>`; check the label survived:
+
+```bash
+kubectl get machines -n <ns> -l cells.kubeswift.io/pool=<pool>
+```
+
+If Machines exist but stay `Pending`, Cluster API has not acted on them — look at
+`spec.bootstrap` (a Machine with neither `configRef` nor `dataSecretName` stays
+Pending by design) and at whether the named Cluster exists in the same namespace.
+
+### A ClusterAPI cell never leaves `AllocatingGPU`
+
+The GPU is found by following the KubeSwiftMachine's `providerID` to the backing
+SwiftGuest, so it only becomes visible once capi-kubeswift has provisioned the VM:
+
+```bash
+kubectl get kubeswiftmachine <cell> -n <ns> -o jsonpath='{.spec.providerID}'
+kubectl get machine <cell> -n <ns> -o jsonpath='{.status.phase}'
+```
+
+An empty providerID with the Machine in `Provisioning` means the provider is still
+working. A `Provisioned` Machine with no providerID is a capi-kubeswift problem, not
+a pool problem.
+
 ### Capacity numbers look stale
 
 They are, and deliberately: a failed read retains the previous values rather than

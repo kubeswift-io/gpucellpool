@@ -161,6 +161,60 @@ type CellSpec struct {
 	// kubelet for logs, exec, port-forward and metrics.
 	// +optional
 	NodeIPFrom string `json:"nodeIPFrom,omitempty"`
+
+	// ClusterAPI configures the ClusterAPI provisioner. Required when
+	// provisioner is ClusterAPI, and rejected otherwise.
+	// +optional
+	ClusterAPI *CellClusterAPISpec `json:"clusterAPI,omitempty"`
+}
+
+// CellClusterAPISpec configures cells provisioned as Cluster API Machines.
+//
+// This mode exists so a GPU cell added to a CAPI-MANAGED workload cluster is a
+// first-class member of it — visible as a Machine, carrying a providerID,
+// participating in the cluster's node lifecycle — instead of a foreign node
+// somebody attached out of band. It is an additional provisioner, never a
+// replacement: CAPI can only add Machines to a cluster it already manages, and the
+// common case for this operator is a bring-your-own cluster.
+type CellClusterAPISpec struct {
+	// ClusterName is the CAPI Cluster, in the pool's namespace, that cells join.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	ClusterName string `json:"clusterName"`
+
+	// Version is the Kubernetes version stamped on each Machine
+	// (Machine.spec.version), which bootstrap providers use to pick the kubelet.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// BootstrapConfigTemplateRef names a CAPI bootstrap config TEMPLATE (e.g. a
+	// KubeadmConfigTemplate) that the operator instantiates once per cell, the way
+	// a MachineSet does. This is the reason to use CAPI at all: the join
+	// credential, CA hashes and cluster config come from the cluster's own
+	// bootstrap provider rather than from a secret somebody pasted.
+	//
+	// Leave it unset to use spec.bootstrap instead — the per-cell rendered Secret
+	// is then handed to the Machine as bootstrap.dataSecretName. That works, but
+	// you own keeping the join data valid.
+	// +optional
+	BootstrapConfigTemplateRef *ClusterAPIObjectRef `json:"bootstrapConfigTemplateRef,omitempty"`
+}
+
+// ClusterAPIObjectRef references a CAPI object by group and kind. There is no
+// version field on purpose: CAPI resolves the version from the CRD's contract
+// labels, and pinning one here would rot.
+type ClusterAPIObjectRef struct {
+	// APIGroup is e.g. "bootstrap.cluster.x-k8s.io".
+	// +kubebuilder:validation:MinLength=1
+	APIGroup string `json:"apiGroup"`
+
+	// Kind is e.g. "KubeadmConfigTemplate".
+	// +kubebuilder:validation:MinLength=1
+	Kind string `json:"kind"`
+
+	// Name is the template object's name in the pool's namespace.
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
 }
 
 // GPU allocation backends.

@@ -141,7 +141,7 @@ write_files:
         echo "kernel: \$(uname -r)"
         echo "nvidia-driver-pkg: ${NVIDIA_DRIVER_PKG}"
         echo "nvidia-driver-version: \$(dpkg -l | awk '/nvidia-dkms/ {print \$3; exit}')"
-        echo "nvidia-container-toolkit: \$(dpkg -query -W -f='\${Version}' nvidia-container-toolkit 2>/dev/null)"
+        echo "nvidia-container-toolkit: \$(dpkg-query -W -f='\${Version}' nvidia-container-toolkit 2>/dev/null)"
         echo "k0s: \$(k0s version)"
       } > /etc/gpucell-image-manifest
 

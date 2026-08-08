@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,12 +73,7 @@ func Validate(pool, old *cellsv1alpha1.GPUCellPool) field.ErrorList {
 		errs = append(errs, field.Invalid(field.NewPath("metadata", "name"), pool.Name, err.Error()))
 	}
 
-	// V11: the enum exists so the field is not breaking later, but only the
-	// SwiftGuest provisioner is implemented.
-	if p := pool.Spec.Cell.Provisioner; p != "" && p != provisioner.ProvisionerSwiftGuest {
-		errs = append(errs, field.NotSupported(spec.Child("cell", "provisioner"),
-			p, []string{provisioner.ProvisionerSwiftGuest}))
-	}
+	errs = append(errs, validateProvisioner(spec.Child("cell"), pool)...)
 
 	errs = append(errs, validateGPU(spec.Child("cell", "gpu"), pool.Spec.Cell.GPU)...)
 	errs = append(errs, validateTemplate(spec.Child("cell"), pool)...)
@@ -144,6 +140,69 @@ func validateGPU(p *field.Path, gpu cellsv1alpha1.CellGPUSpec) field.ErrorList {
 	default:
 		errs = append(errs, field.NotSupported(p.Child("backend"), backend,
 			[]string{cellsv1alpha1.GPUBackendDRA, cellsv1alpha1.GPUBackendNative}))
+	}
+	return errs
+}
+
+// capiExpressibleTemplateFields are the guestTemplate fields a KubeSwiftMachine
+// can carry. Everything else has nowhere to go under the ClusterAPI provisioner.
+var capiExpressibleTemplateFields = []string{"imageRef", "guestClassRef", "interfaces"}
+
+// validateProvisioner covers V11: the provisioner and its per-mode configuration
+// must agree, and a guestTemplate must be expressible by the mode chosen.
+//
+// The last part is the important one. A KubeSwiftMachine exposes a curated subset
+// of SwiftGuestSpec (image, class, two networks, GPU, storage class), so mapping a
+// rich guestTemplate onto it would have to DROP fields — data disks, extra
+// interfaces, topology, storage — and a cell that boots with less than the operator
+// asked for is exactly the silent failure this project refuses. So the fields are
+// rejected here, at admission, where the operator can see them named.
+func validateProvisioner(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.ErrorList {
+	var errs field.ErrorList
+	name := pool.Spec.Cell.Provisioner
+	if name == "" {
+		name = provisioner.ProvisionerSwiftGuest
+	}
+	capi := pool.Spec.Cell.ClusterAPI
+
+	switch name {
+	case provisioner.ProvisionerSwiftGuest:
+		if capi != nil {
+			errs = append(errs, field.Forbidden(p.Child("clusterAPI"),
+				"only valid with provisioner: ClusterAPI"))
+		}
+		return errs
+	case provisioner.ProvisionerClusterAPI:
+		// fall through to the checks below
+	default:
+		return append(errs, field.NotSupported(p.Child("provisioner"), name,
+			[]string{provisioner.ProvisionerSwiftGuest, provisioner.ProvisionerClusterAPI}))
+	}
+
+	if capi == nil {
+		return append(errs, field.Required(p.Child("clusterAPI"),
+			"required with provisioner: ClusterAPI — cells must name the CAPI Cluster they join"))
+	}
+	if ref := capi.BootstrapConfigTemplateRef; ref != nil && !strings.HasSuffix(ref.Kind, "Template") {
+		// The per-cell object's kind is the template's kind minus "Template"; without
+		// the suffix the operator would try to create another template.
+		errs = append(errs, field.Invalid(p.Child("clusterAPI", "bootstrapConfigTemplateRef", "kind"),
+			ref.Kind, `must be a template kind ending in "Template", e.g. KubeadmConfigTemplate`))
+	}
+
+	// Which guestTemplate fields are actually present?
+	var tmpl map[string]json.RawMessage
+	if raw := pool.Spec.Cell.GuestTemplate.Raw; len(raw) > 0 {
+		if err := json.Unmarshal(raw, &tmpl); err != nil {
+			return errs // validateTemplate reports the parse failure
+		}
+	}
+	for f := range tmpl {
+		if !contains(capiExpressibleTemplateFields, f) {
+			errs = append(errs, field.Forbidden(p.Child("guestTemplate", f),
+				"not expressible by a KubeSwiftMachine, so it would be silently dropped; "+
+					"provisioner ClusterAPI supports only "+strings.Join(capiExpressibleTemplateFields, ", ")))
+		}
 	}
 	return errs
 }

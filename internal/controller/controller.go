@@ -55,6 +55,13 @@ type GPUCellPoolReconciler struct {
 // +kubebuilder:rbac:groups=swift.kubeswift.io,resources=swiftguests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=seed.kubeswift.io,resources=swiftseedprofiles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices;resourceclaims;resourceclaimtemplates;deviceclasses,verbs=get;list;watch
+// ClusterAPI provisioner. The bootstrap groups are wildcarded because the
+// bootstrap provider is the user's choice (kubeadm, k0smotron, ...) and its kind
+// is named in the pool spec, not known at build time.
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=kubeswiftmachines,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=*,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -67,7 +74,13 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	prov := r.provisioner()
+	prov, err := r.provisioner(&pool)
+	if err != nil {
+		// Nothing can be created safely, and the operator must be told rather than
+		// left watching a pool that never does anything.
+		r.event(&pool, corev1.EventTypeWarning, cellsv1alpha1.ReasonUnknownProvisioner, err.Error())
+		return ctrl.Result{}, err
+	}
 
 	if !pool.DeletionTimestamp.IsZero() {
 		return r.reconcileDeletion(ctx, &pool, prov)
@@ -278,10 +291,11 @@ func (r *GPUCellPoolReconciler) discoverCells(
 		previous[c.Name] = c
 	}
 
-	guests, err := r.listCellGuests(ctx, pool)
+	guests, err := prov.List(ctx, pool.Namespace, pool.Name)
 	if err != nil {
 		return nil, err
 	}
+	sort.Strings(guests) // stable status ordering regardless of list order
 
 	out := make([]cellsv1alpha1.CellStatus, 0, len(guests))
 	for _, name := range guests {
@@ -491,7 +505,14 @@ func (r *GPUCellPoolReconciler) ensureBootstrapSecret(
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
 				pool, cellsv1alpha1.GroupVersion.WithKind("GPUCellPool"))},
 		},
-		Data: map[string][]byte{bootstrap.SecretKey: rendered},
+		// Two keys, same bytes. KubeSwift's seed reads "user-data"; Cluster API's
+		// bootstrap contract reads "value" from a dataSecretName Secret. Writing
+		// both means one rendered Secret serves either provisioner instead of the
+		// ClusterAPI path silently producing a Machine that never gets its data.
+		Data: map[string][]byte{
+			bootstrap.SecretKey:     rendered,
+			bootstrap.CAPISecretKey: rendered,
+		},
 	}
 
 	var existing corev1.Secret
@@ -559,7 +580,7 @@ func (r *GPUCellPoolReconciler) deleteCell(
 			}
 		}
 	}
-	if sg, ok := prov.(*provisioner.SwiftGuestProvisioner); ok {
+	if sg, ok := prov.(provisioner.DrainFinalizerClearer); ok {
 		if err := sg.ClearDrainFinalizer(ctx, req); err != nil {
 			return err
 		}
@@ -675,8 +696,8 @@ func (r *GPUCellPoolReconciler) writeStatus(
 		// is not the target. Comparing against it made Ready wrong in both directions
 		// — a pool correctly holding 2 autoscaled cells read "2 of 1 cells are Ready"
 		// and False, and one correctly holding none read "0 of 1".
-		Desired: scale.Desired,
-		Ready:   ready,
+		Desired:            scale.Desired,
+		Ready:              ready,
 		WorkloadReachable:  reachable,
 		WorkloadReason:     reachReason,
 		WorkloadMessage:    reachMsg,
@@ -737,6 +758,7 @@ func (r *GPUCellPoolReconciler) cellRequest(pool *cellsv1alpha1.GPUCellPool, idx
 		Hostname:            name,
 		NodeIPFrom:          pool.Spec.Cell.NodeIPFrom,
 		SpreadPolicy:        pool.Spec.Cell.SpreadPolicy,
+		ClusterAPI:          pool.Spec.Cell.ClusterAPI,
 		TemplateHash:        cellid.TemplateHash(pool.Spec.Cell.GuestTemplate.Raw),
 		OwnerRefs: []metav1.OwnerReference{*metav1.NewControllerRef(
 			pool, cellsv1alpha1.GroupVersion.WithKind("GPUCellPool"))},
@@ -777,11 +799,24 @@ func (r *GPUCellPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *GPUCellPoolReconciler) provisioner() provisioner.Provisioner {
+// provisioner picks the cell provisioner named by the pool.
+//
+// An unknown value returns an error rather than quietly falling back to
+// SwiftGuest: the field decides what objects get created in the infrastructure
+// cluster, and silently ignoring it would give an operator a pool that looks
+// configured for Cluster API while creating bare SwiftGuests.
+func (r *GPUCellPoolReconciler) provisioner(pool *cellsv1alpha1.GPUCellPool) (provisioner.Provisioner, error) {
 	if r.NewProvisioner != nil {
-		return r.NewProvisioner(r.Client)
+		return r.NewProvisioner(r.Client), nil
 	}
-	return provisioner.NewSwiftGuestProvisioner(r.Client)
+	switch name := pool.Spec.Cell.Provisioner; name {
+	case "", provisioner.ProvisionerSwiftGuest:
+		return provisioner.NewSwiftGuestProvisioner(r.Client), nil
+	case provisioner.ProvisionerClusterAPI:
+		return provisioner.NewClusterAPIProvisioner(r.Client), nil
+	default:
+		return nil, fmt.Errorf("unknown cell provisioner %q", name)
+	}
 }
 
 func (r *GPUCellPoolReconciler) provider(cs kubernetes.Interface, mode string) capacity.Provider {

@@ -1,0 +1,89 @@
+# A pool whose cells are Cluster API Machines, for a workload cluster that Cluster
+# API already manages.
+#
+# Use this instead of the SwiftGuest sample when the workload cluster is CAPI-managed
+# and you want the GPU cells to be first-class members of it: each cell gets a
+# Machine and a providerID, and the cluster's own controllers see it. With the
+# SwiftGuest provisioner the cell is a node that joined out of band — which works,
+# but CAPI does not know it exists.
+#
+# It is an ADDITIONAL mode, not a replacement: Cluster API can only add Machines to
+# a cluster it manages, and the common case for this operator is bring-your-own.
+#
+# Extra prerequisites in the INFRASTRUCTURE cluster (which is also the CAPI
+# management cluster here):
+#   - Cluster API >= v1.11 (contract v1beta2) and cluster-api-provider-kubeswift
+#     >= the release carrying KubeSwiftMachine spec.backend.swiftGuest.gpu
+#   - a CAPI Cluster named below, already provisioned, in this namespace
+#   - the bootstrap template below, if you use one
+apiVersion: cells.kubeswift.io/v1alpha1
+kind: GPUCellPool
+metadata:
+  name: inference
+  namespace: gpu-cells
+spec:
+  replicas: 2
+
+  cell:
+    provisioner: ClusterAPI
+
+    clusterAPI:
+      # The CAPI Cluster the cells join. Machines are named <pool>-<index>, and
+      # capi-kubeswift derives the guest hostname — and therefore the workload Node
+      # name — from the Machine name, which is what keeps cell identity intact.
+      clusterName: inference
+      version: v1.33.3
+
+      # Preferred: let the cluster's OWN bootstrap provider produce the join data.
+      # The operator instantiates this template once per cell, the way a MachineSet
+      # does, so tokens and CA hashes come from the cluster rather than from a
+      # secret you maintain. The kind must end in "Template".
+      #
+      # Omit this and spec.bootstrap's rendered Secret is handed to the Machine as
+      # bootstrap.dataSecretName instead — valid, but then the join data is yours to
+      # keep working.
+      bootstrapConfigTemplateRef:
+        apiGroup: bootstrap.cluster.x-k8s.io
+        kind: KubeadmConfigTemplate
+        name: gpu-workers
+
+    # Only the fields a KubeSwiftMachine can express are allowed here under this
+    # provisioner — imageRef, guestClassRef, interfaces. Anything else (dataDisks,
+    # storage, topologySpreadConstraints, ...) is REJECTED at admission rather than
+    # dropped, because a cell that boots with less than you asked for is worse than
+    # a pool that refuses to be created.
+    guestTemplate:
+      guestClassRef: {name: gpu-worker-32c-128g}
+      imageRef: {name: gpu-worker-noble-580}
+      interfaces:
+        - {name: mgmt, primary: true}
+        - {name: node, networkRef: {name: cell-udn}}
+
+    # The kubelet must register a ROUTABLE address: the workload apiserver dials it
+    # for logs, exec, port-forward and metrics.
+    nodeIPFrom: node
+
+    gpu:
+      count: 1
+      backend: DRA
+      dra:
+        resourceClaimTemplateName: single-vfio-gpu
+        tier: pcie
+
+  bootstrap:
+    # Unused while bootstrapConfigTemplateRef is set above, but the field is still
+    # required by the pool schema; point it at any Secret.
+    provider: Opaque
+    joinSecretRef: {name: cell-join}
+
+  workloadCluster:
+    kubeconfigSecretRef: {name: inference-kubeconfig}
+    key: value
+    node:
+      labels:
+        # HAMi's own gate. Without it HAMi ignores the node and the cell never
+        # leaves AwaitingGPUCapacity.
+        gpu: "on"
+
+  capacity:
+    provider: HAMi

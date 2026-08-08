@@ -1,0 +1,166 @@
+# Minimal, TEST-ONLY stand-ins for the Cluster API kinds the ClusterAPI cell
+# provisioner talks to.
+#
+# Unlike the KubeSwift stubs next door, these declare the REQUIRED fields of the
+# contract rather than leaving the schema wide open. That is deliberate: the whole
+# risk in this provisioner is rendering a Machine that a real apiserver would
+# reject, so the stub encodes what Cluster API v1.13 actually requires
+# (spec.clusterName, spec.bootstrap, spec.infrastructureRef with its
+# apiGroup/kind/name triple) and a rendering mistake fails here.
+#
+# What it still cannot prove: field formats, defaulting, and Cluster API's own
+# webhooks. A stub is not a cluster — end-to-end validation needs a real
+# CAPI-managed workload cluster, which the lab does not have.
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: machines.cluster.x-k8s.io
+spec:
+  group: cluster.x-k8s.io
+  scope: Namespaced
+  names:
+    kind: Machine
+    listKind: MachineList
+    plural: machines
+    singular: machine
+  versions:
+    - name: v1beta2
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [clusterName, bootstrap, infrastructureRef]
+              properties:
+                clusterName:
+                  type: string
+                  minLength: 1
+                version:
+                  type: string
+                providerID:
+                  type: string
+                bootstrap:
+                  type: object
+                  properties:
+                    dataSecretName:
+                      type: string
+                    configRef:
+                      type: object
+                      required: [apiGroup, kind, name]
+                      properties:
+                        apiGroup: {type: string}
+                        kind: {type: string}
+                        name: {type: string}
+                infrastructureRef:
+                  type: object
+                  required: [apiGroup, kind, name]
+                  properties:
+                    apiGroup: {type: string}
+                    kind: {type: string}
+                    name: {type: string}
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubeswiftmachines.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  scope: Namespaced
+  names:
+    kind: KubeSwiftMachine
+    listKind: KubeSwiftMachineList
+    plural: kubeswiftmachines
+    singular: kubeswiftmachine
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [backend]
+              properties:
+                providerID:
+                  type: string
+                backend:
+                  type: object
+                  required: [type]
+                  properties:
+                    type:
+                      type: string
+                      enum: [SwiftGuest]
+                    swiftGuest:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+# A bootstrap provider stands in for whatever the user actually runs. Two kinds,
+# because the operator instantiates the concrete one from the template.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubeadmconfigtemplates.bootstrap.cluster.x-k8s.io
+spec:
+  group: bootstrap.cluster.x-k8s.io
+  scope: Namespaced
+  names:
+    kind: KubeadmConfigTemplate
+    listKind: KubeadmConfigTemplateList
+    plural: kubeadmconfigtemplates
+    singular: kubeadmconfigtemplate
+  versions:
+    - name: v1beta2
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubeadmconfigs.bootstrap.cluster.x-k8s.io
+spec:
+  group: bootstrap.cluster.x-k8s.io
+  scope: Namespaced
+  names:
+    kind: KubeadmConfig
+    listKind: KubeadmConfigList
+    plural: kubeadmconfigs
+    singular: kubeadmconfig
+  versions:
+    - name: v1beta2
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
