@@ -70,11 +70,9 @@ spec:
         resourceClaimTemplateName: single-vfio-gpu
         tier: pcie
 
-  bootstrap:
-    # Unused while bootstrapConfigTemplateRef is set above, but the field is still
-    # required by the pool schema; point it at any Secret.
-    provider: Opaque
-    joinSecretRef: {name: cell-join}
+  # No spec.bootstrap.joinSecretRef here on purpose: with a
+  # bootstrapConfigTemplateRef above, the workload cluster's own bootstrap provider
+  # supplies the join data, and setting one is rejected rather than ignored.
 
   workloadCluster:
     kubeconfigSecretRef: {name: inference-kubeconfig}

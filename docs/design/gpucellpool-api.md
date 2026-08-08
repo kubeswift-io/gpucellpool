@@ -395,7 +395,7 @@ compute truth (`-capacity.md` §5).
 | V4 | `backend: DRA` ⇒ `dra` set; `Native` ⇒ `native` set; never both | one allocation backend, as KubeSwift enforces |
 | V5 | `guestTemplate` sets no operator-owned or denied field (§4) | no silent override |
 | V6 | `guestTemplate.guestClassRef` and `.imageRef` non-empty | GPU cells are disk boot |
-| V7 | `bootstrap.provider: Opaque` ⇒ `joinSecretRef` set | otherwise the cell can never join |
+| V7 | `bootstrap.provider: Opaque` ⇒ `joinSecretRef` set — **unless** `cell.clusterAPI.bootstrapConfigTemplateRef` is set, where it is instead FORBIDDEN | otherwise the cell can never join; but when CAPI's own bootstrap provider owns the join data, requiring a Secret nothing reads teaches operators to ignore the schema |
 | V8 | `capacity.hami.mode: DRA` ⇒ `deviceClassName` set | no way to find the slices otherwise |
 | V9 | all refs resolve in the pool's namespace | no cross-namespace secret reads |
 | V10 | `replicas` may only decrease when `WorkloadClusterReachable=True` | never scale down blind (D10) |

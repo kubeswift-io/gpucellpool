@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
@@ -62,6 +63,22 @@ func TestClusterAPIAcceptsTheExpressibleTemplate(t *testing.T) {
 			`"interfaces":[{"name":"mgmt","primary":true},{"name":"node","networkRef":{"name":"n"}}]}`)}
 	p.Spec.Cell.NodeIPFrom = "node"
 	assertValid(t, p)
+}
+
+// A pool whose join data comes from the cluster's own bootstrap provider must not be
+// forced to invent a join Secret that nothing reads.
+func TestCAPIBootstrapTemplateReplacesTheJoinSecret(t *testing.T) {
+	p := capiPool()
+	p.Spec.Cell.ClusterAPI.BootstrapConfigTemplateRef = &cellsv1alpha1.ClusterAPIObjectRef{
+		APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KubeadmConfigTemplate", Name: "workers",
+	}
+	p.Spec.Bootstrap.JoinSecretRef = nil
+	assertValid(t, p)
+
+	// Setting one anyway is a rejection, not a warning: it would look like the
+	// source of the cells' cloud-init while being ignored.
+	p.Spec.Bootstrap.JoinSecretRef = &corev1.LocalObjectReference{Name: "join"}
+	assertRejected(t, p, "unused when cell.clusterAPI.bootstrapConfigTemplateRef is set")
 }
 
 func TestBootstrapTemplateRefMustBeATemplateKind(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+	"github.com/kubeswift-io/gpucellpool/internal/provisioner"
 )
 
 // unstructuredList is an alias so the reconciler reads cleanly; KubeSwift kinds
@@ -157,4 +158,13 @@ func readyNodeNames(cells []cellsv1alpha1.CellStatus) []string {
 		}
 	}
 	return out
+}
+
+// capiOwnsBootstrap reports whether the workload cluster's own Cluster API bootstrap
+// provider produces the cells' join data. When it does, spec.bootstrap is unused:
+// nothing is rendered and no join Secret is required.
+func capiOwnsBootstrap(pool *cellsv1alpha1.GPUCellPool) bool {
+	return pool.Spec.Cell.Provisioner == provisioner.ProvisionerClusterAPI &&
+		pool.Spec.Cell.ClusterAPI != nil &&
+		pool.Spec.Cell.ClusterAPI.BootstrapConfigTemplateRef != nil
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -120,6 +122,9 @@ func TestClusterAPICellInstantiatesTheBootstrapTemplate(t *testing.T) {
 			Kind:     "KubeadmConfigTemplate",
 			Name:     "gpu-workers",
 		}
+		// The cluster's bootstrap provider owns the join data, so spec.bootstrap is
+		// unused — and admission forbids setting it, so the harness must not either.
+		p.Spec.Bootstrap.JoinSecretRef = nil
 	})
 
 	// The template a CAPI user already has.
@@ -156,6 +161,15 @@ func TestClusterAPICellInstantiatesTheBootstrapTemplate(t *testing.T) {
 	}
 	if _, set := boot["dataSecretName"]; set {
 		t.Error("both configRef and dataSecretName set: the bootstrap provider would be bypassed")
+	}
+
+	// And nothing was rendered: a per-cell cloud-init Secret here would be dead
+	// weight that an operator would reasonably assume was being used.
+	var secret corev1.Secret
+	err := outerClient.Get(context.Background(),
+		types.NamespacedName{Namespace: f.ns, Name: "cells-0-bootstrap"}, &secret)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("a bootstrap Secret was rendered anyway (err=%v)", err)
 	}
 }
 

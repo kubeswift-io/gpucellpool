@@ -77,7 +77,7 @@ func Validate(pool, old *cellsv1alpha1.GPUCellPool) field.ErrorList {
 
 	errs = append(errs, validateGPU(spec.Child("cell", "gpu"), pool.Spec.Cell.GPU)...)
 	errs = append(errs, validateTemplate(spec.Child("cell"), pool)...)
-	errs = append(errs, validateBootstrap(spec.Child("bootstrap"), pool.Spec.Bootstrap)...)
+	errs = append(errs, validateBootstrap(spec.Child("bootstrap"), pool)...)
 	errs = append(errs, validateWorkloadCluster(spec.Child("workloadCluster"), pool.Spec.WorkloadCluster)...)
 	errs = append(errs, validateCapacity(spec.Child("capacity"), pool.Spec.Capacity)...)
 	errs = append(errs, validateAutoscaling(spec.Child("autoscaling"), pool)...)
@@ -237,11 +237,24 @@ func validateTemplate(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.Erro
 }
 
 // validateBootstrap covers V7.
-func validateBootstrap(p *field.Path, b cellsv1alpha1.BootstrapSpec) field.ErrorList {
+func validateBootstrap(p *field.Path, pool *cellsv1alpha1.GPUCellPool) field.ErrorList {
 	var errs field.ErrorList
+	b := pool.Spec.Bootstrap
 	provider := b.Provider
 	if provider == "" {
 		provider = cellsv1alpha1.BootstrapProviderOpaque
+	}
+	// A Cluster API pool with its own bootstrap template does not use this block at
+	// all: the join data comes from the cluster's bootstrap provider. Demanding a
+	// join Secret there would force the operator to invent one that nothing reads,
+	// which is how a schema teaches people to ignore it.
+	if capiOwnsBootstrap(pool) {
+		if b.JoinSecretRef != nil && b.JoinSecretRef.Name != "" {
+			errs = append(errs, field.Forbidden(p.Child("joinSecretRef"),
+				"unused when cell.clusterAPI.bootstrapConfigTemplateRef is set: "+
+					"the workload cluster's bootstrap provider supplies the join data"))
+		}
+		return errs
 	}
 	if provider == cellsv1alpha1.BootstrapProviderOpaque &&
 		(b.JoinSecretRef == nil || b.JoinSecretRef.Name == "") {
@@ -249,6 +262,14 @@ func validateBootstrap(p *field.Path, b cellsv1alpha1.BootstrapSpec) field.Error
 			"required for the Opaque provider: without it a cell boots with no cloud-init and never joins"))
 	}
 	return errs
+}
+
+// capiOwnsBootstrap reports whether the workload cluster's own bootstrap provider
+// produces the cells' join data, making spec.bootstrap redundant.
+func capiOwnsBootstrap(pool *cellsv1alpha1.GPUCellPool) bool {
+	return pool.Spec.Cell.Provisioner == provisioner.ProvisionerClusterAPI &&
+		pool.Spec.Cell.ClusterAPI != nil &&
+		pool.Spec.Cell.ClusterAPI.BootstrapConfigTemplateRef != nil
 }
 
 func validateWorkloadCluster(p *field.Path, w cellsv1alpha1.WorkloadClusterSpec) field.ErrorList {

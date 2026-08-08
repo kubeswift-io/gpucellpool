@@ -466,6 +466,13 @@ func (r *GPUCellPoolReconciler) createCell(
 func (r *GPUCellPoolReconciler) ensureBootstrapSecret(
 	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, idx int32,
 ) error {
+	// A Cluster API pool with its own bootstrap template gets its join data from the
+	// workload cluster's bootstrap provider, so there is nothing to render and no
+	// join Secret to demand.
+	if capiOwnsBootstrap(pool) {
+		return nil
+	}
+
 	ref := pool.Spec.Bootstrap.JoinSecretRef
 	if ref == nil {
 		return fmt.Errorf("spec.bootstrap.joinSecretRef is required for the %s provider",
