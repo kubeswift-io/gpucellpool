@@ -26,9 +26,15 @@ do not translate.
 
 ## Status
 
-**Pre-alpha.** The design is complete (`docs/design/`), the API types are in place,
-and the controller is not implemented yet. The hardware proof (Phase 1 in
-`docs/design/gpucellpool-poc.md`) is the gate on everything else.
+**v0.1.0 — alpha.** Every capability has been run on real hardware: one physical GPU
+passed into a VM, the VM joined as a worker node, HAMi shared that GPU between
+workloads, and the pool scaled up and down on demand. Both cell provisioners work —
+`SwiftGuest` directly, or a Cluster API `Machine` for a CAPI-managed workload cluster
+(`docs/clusterapi-cells.md`).
+
+Alpha because the API is `v1alpha1` and one GPU is one GPU: pools of two or more cells
+are covered by a two-apiserver test harness, not by hardware. HAMi's DRA mode is not
+implemented.
 
 ## Example
 

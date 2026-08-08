@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.0] — 2026-08-08
 
 ### Added
 
@@ -77,14 +77,56 @@ All notable changes to this project are documented here. The format follows
 - The sample and design doc showed a `networkRef.kind` field that does not exist;
   KubeSwift's strict decoding rejects it, so the sample could not have been applied.
 
+### Added — Cluster API cells (Phase 5)
+
+- `cell.provisioner: ClusterAPI` plus `cell.clusterAPI` (`clusterName`, `version`,
+  `bootstrapConfigTemplateRef`). Each cell becomes a `Machine` and a
+  `KubeSwiftMachine`, so a GPU cell added to a CAPI-managed cluster is a member of
+  it — with a `providerID`, visible to the cluster's own controllers — rather than a
+  node attached out of band.
+- One Machine per cell, named after the cell, not a MachineDeployment sized to the
+  replica count. A MachineDeployment generates Machine names, and capi-kubeswift
+  derives the guest hostname (and so the Node name) from the Machine name, which
+  would break the cell-name==Node-name identity and leave no way to drain one cell.
+- Bootstrap comes from the workload cluster's own provider when
+  `bootstrapConfigTemplateRef` is set: the operator instantiates the template once
+  per cell, as a MachineSet does, so tokens and CA hashes are the cluster's rather
+  than a secret somebody maintains. `spec.bootstrap.joinSecretRef` is then rejected
+  instead of ignored. Without a template ref, the pool's rendered Secret is handed
+  over as `dataSecretName`.
+- A `KubeSwiftMachine` can express only image, class, two networks and GPU, so any
+  other `guestTemplate` field is rejected at admission rather than silently dropped.
+- Validated end to end on hardware: pool to Ready in 6m29s, two workloads sharing the
+  cell's GTX 1080, teardown returning the GPU claim in under a minute.
+  See `docs/clusterapi-cells.md`, which also records what the workload cluster needs.
+
+### Fixed (from the Cluster API validation)
+
+- The pool claimed the **controller** owner reference on its Machines. Kubernetes
+  allows one per object and Cluster API needs it, so CAPI failed every reconcile with
+  "already owned by another GPUCellPool controller" — no bootstrap data, no VM, ever.
+  Cells are co-owned now, which is all garbage collection requires.
+- Pool teardown listed SwiftGuests, so a ClusterAPI pool saw no cells, drained
+  nothing and dropped its own finalizer — orphaning each Machine with the drain
+  finalizer still on it, unclearable, GPU claim leaked. Teardown goes through the
+  provisioner now.
+- Scale-to-zero was a one-way door. The satisfiability reference device came from
+  live capacity only, so an emptied pool had nothing to judge a request against,
+  counted nothing satisfiable, and never grew back — while blaming the request.
+  `status.cellDeviceShape` outlives the cells; a pool that never advertised a device
+  reports `CellShapeUnknown` and says what to do about it.
+- `Ready` was measured against `spec.replicas`, which stops being the target once
+  autoscaling is on: a healthy pool holding two autoscaled cells reported "2 of 1
+  cells are Ready" and False. A pool that deliberately holds none also reported
+  itself broken; both now say `ScaledToZero`.
+
 ### Known gaps
 
 - `hami.mode: DRA` reports `ErrUnsupported`; only DevicePlugin mode is implemented.
-- Automatic scale-DOWN is not implemented (`scaleDown: Auto` is rejected):
-  shrinking on a heuristic is the one unrecoverable mistake in this architecture,
-  so it is a separate phase. Shrinking works today by changing `spec.replicas` or
-  `minReplicas`, which runs the drain path.
-- `cell.provisioner: ClusterAPI` is rejected; only the SwiftGuest provisioner exists.
-- The webhook's certificate wiring has no envtest coverage (its validation logic does).
+- Pools of two or more cells are covered by the two-apiserver harness, not by
+  hardware — the lab has one GPU. So are `deletion.policy: Force` and cell
+  replacement backoff.
+- Cell startup measures 4m45s, about three minutes of which is cloning a 30 GiB root
+  disk. A smaller disk or a copy-on-write clone is where the next minute is.
 - A join template must derive the cell's routable address by subnet: `nodeIPFrom`
   names a KubeSwift interface, and cloud-init cannot map that to a guest device.
