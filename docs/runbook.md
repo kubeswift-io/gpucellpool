@@ -167,6 +167,18 @@ If Machines exist but stay `Pending`, Cluster API has not acted on them — look
 `spec.bootstrap` (a Machine with neither `configRef` nor `dataSecretName` stays
 Pending by design) and at whether the named Cluster exists in the same namespace.
 
+### A ClusterAPI Machine stays `Pending` and CAPI logs "already owned by another controller"
+
+The pool must be a **co-owner** of its Machines, never the controller — Cluster API
+needs that slot. If you see this, the operator predates the fix:
+
+```bash
+kubectl get machine <cell> -n <ns> -o jsonpath='{.metadata.ownerReferences}'
+```
+
+A healthy cell has two owner references: the GPUCellPool (no `controller: true`) and
+the Cluster (with it).
+
 ### A ClusterAPI cell never leaves `AllocatingGPU`
 
 The GPU is found by following the KubeSwiftMachine's `providerID` to the backing

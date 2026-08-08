@@ -185,7 +185,7 @@ deletion; metrics.
 | multiple workload clusters per pool | `spec.workloadCluster` is a struct, not a list — one pool per cluster; a fleet view is a `Cluster`-CRD/gateway concern |
 | HAMi install lifecycle | D6 — verification only, `CapacityProviderReady` condition |
 | workload/model/KServe/Ray/Kueue/llm-d | out of scope permanently: cells are capacity, Pods remain Pods |
-| ~~CAPI as the provisioner~~ | **shipped**: `cell.provisioner: ClusterAPI` + `cell.clusterAPI`. Bootstrap comes from the cluster's own provider when `bootstrapConfigTemplateRef` is set (instantiated per cell, as a MachineSet does); otherwise the pool's rendered Secret is handed over as `dataSecretName`. NOT hardware-validated: it needs a CAPI-managed workload cluster, which the lab does not have |
+| ~~CAPI as the provisioner~~ | **shipped and HARDWARE-VALIDATED 2026-08-08**: `cell.provisioner: ClusterAPI` + `cell.clusterAPI`. Bootstrap comes from the cluster's own provider when `bootstrapConfigTemplateRef` is set (instantiated per cell, as a MachineSet does); otherwise the pool's rendered Secret is handed over as `dataSecretName`. A pool added the only worker of a real CAPI-managed cluster (Machine + providerID + Node + HAMi fractions) in 6m29s. Two bugs the harness could not see were found doing it — see `docs/clusterapi-cells.md` |
 | non-KubeSwift outer provisioners | same enum — the `CellProvisioner` seam is deliberately VMM-agnostic |
 
 **Non-goals (hard).** No HAMi API/scheduler/device-plugin logic, resource names, or
