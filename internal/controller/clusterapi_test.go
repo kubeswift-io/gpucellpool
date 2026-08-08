@@ -303,3 +303,48 @@ func TestProvisionerSelection(t *testing.T) {
 		})
 	}
 }
+
+// TestClusterAPIObjectsAreCoOwnedNotControlled guards the bug a live Cluster API
+// cluster found and the harness could not: claiming the controller ownerRef makes
+// CAPI's own controllers fail every reconcile with "already owned by another
+// controller", so the Machine never gets bootstrap data and no VM is created.
+func TestClusterAPIObjectsAreCoOwnedNotControlled(t *testing.T) {
+	f := capiFixture(t, func(p *cellsv1alpha1.GPUCellPool) {
+		p.Spec.Cell.ClusterAPI.BootstrapConfigTemplateRef = &cellsv1alpha1.ClusterAPIObjectRef{
+			APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KubeadmConfigTemplate", Name: "gpu-workers",
+		}
+		p.Spec.Bootstrap.JoinSecretRef = nil
+	})
+	tmpl := &unstructured.Unstructured{}
+	tmpl.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "bootstrap.cluster.x-k8s.io", Version: "v1beta2", Kind: "KubeadmConfigTemplate"})
+	tmpl.SetNamespace(f.ns)
+	tmpl.SetName("gpu-workers")
+	tmpl.Object["spec"] = map[string]any{"template": map[string]any{"spec": map[string]any{}}}
+	if err := outerClient.Create(context.Background(), tmpl); err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+
+	f.reconcile()
+
+	cfgGVK := schema.GroupVersionKind{
+		Group: "bootstrap.cluster.x-k8s.io", Version: "v1beta2", Kind: "KubeadmConfig"}
+	for _, gvk := range []schema.GroupVersionKind{
+		provisioner.MachineGVK, provisioner.KubeSwiftMachineGVK, cfgGVK,
+	} {
+		obj := f.get(gvk, "cells-0")
+		refs := obj.GetOwnerReferences()
+		if len(refs) != 1 {
+			t.Errorf("%s ownerRefs = %v, want exactly the pool", gvk.Kind, refs)
+			continue
+		}
+		// Owned, so garbage collection still removes it with the pool...
+		if refs[0].Kind != "GPUCellPool" {
+			t.Errorf("%s owner = %s, want GPUCellPool", gvk.Kind, refs[0].Kind)
+		}
+		// ...but NOT controlled, because that slot belongs to Cluster API.
+		if refs[0].Controller != nil && *refs[0].Controller {
+			t.Errorf("%s: pool claimed the controller ownerRef; Cluster API needs it", gvk.Kind)
+		}
+	}
+}

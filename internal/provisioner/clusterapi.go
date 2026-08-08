@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -222,7 +223,7 @@ func (p *ClusterAPIProvisioner) ensureBootstrapConfig(
 	obj.SetNamespace(req.Namespace)
 	obj.SetName(req.CellName)
 	obj.SetLabels(p.labels(req))
-	obj.SetOwnerReferences(req.OwnerRefs)
+	obj.SetOwnerReferences(coOwnerRefs(req.OwnerRefs))
 	obj.Object["spec"] = spec
 	if err := p.Client.Create(ctx, obj); err != nil {
 		return nil, err
@@ -249,7 +250,7 @@ func (p *ClusterAPIProvisioner) ensureInfraMachine(ctx context.Context, req Cell
 	infra.SetName(req.CellName)
 	infra.SetLabels(p.labels(req))
 	infra.SetAnnotations(map[string]string{cellsv1alpha1.AnnotationTemplateHash: req.TemplateHash})
-	infra.SetOwnerReferences(req.OwnerRefs)
+	infra.SetOwnerReferences(coOwnerRefs(req.OwnerRefs))
 	infra.Object["spec"] = map[string]any{"backend": backend}
 	return p.Client.Create(ctx, infra)
 }
@@ -295,7 +296,7 @@ func (p *ClusterAPIProvisioner) ensureMachine(
 	machine.SetName(req.CellName)
 	machine.SetLabels(p.labels(req))
 	machine.SetAnnotations(map[string]string{cellsv1alpha1.AnnotationTemplateHash: req.TemplateHash})
-	machine.SetOwnerReferences(req.OwnerRefs)
+	machine.SetOwnerReferences(coOwnerRefs(req.OwnerRefs))
 	machine.SetFinalizers([]string{cellsv1alpha1.FinalizerCellDrain})
 	machine.Object["spec"] = spec
 
@@ -523,6 +524,30 @@ func bootstrapConfigGVK(ref *cellsv1alpha1.ClusterAPIObjectRef) schema.GroupVers
 // but an unstructured client has to name one. v1beta2 is the contract version that
 // ships with Cluster API v1.11+.
 const bootstrapTemplateVersion = "v1beta2"
+
+// coOwnerRefs turns the pool's ownership into NON-controller owner references.
+//
+// Cluster API's own controllers must be the controller of the objects they manage —
+// the Machine controller sets itself on the infrastructure object, and the Cluster on
+// the Machine — and Kubernetes allows exactly ONE controller reference per object.
+// Claiming it makes CAPI fail every reconcile with "already owned by another
+// controller", which is a hard stop: the Machine never gets bootstrap data and no VM
+// is ever created.
+//
+// A plain owner reference is enough for what this operator actually needs, which is
+// garbage collection: when the pool goes, its cells go with it.
+//
+// Not caught by the harness — a CRD stub accepts any ownerRef, because the thing that
+// objects is the controller that is not running there.
+func coOwnerRefs(refs []metav1.OwnerReference) []metav1.OwnerReference {
+	out := make([]metav1.OwnerReference, 0, len(refs))
+	for _, r := range refs {
+		r.Controller = nil
+		r.BlockOwnerDeletion = nil
+		out = append(out, r)
+	}
+	return out
+}
 
 // labels are the pool's cell identity labels plus the Cluster API cluster label,
 // which is how Cluster API's controllers find a Cluster's Machines at all.
