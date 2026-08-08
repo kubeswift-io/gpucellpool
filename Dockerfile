@@ -22,6 +22,15 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
 # KubeSwift's launcher pods, which are privileged by deliberate design — no reason
 # whatsoever for elevated privileges.
 FROM gcr.io/distroless/static:nonroot
+
+# GitHub links a container package to a repository through this label, and that link
+# is what lets the repository's Actions token push to the package. Without it, a first
+# push from a workstation creates an ORPHAN package: the release workflow then fails
+# with "403 Forbidden" on a blob it is not allowed to write, and the only other fix is
+# a manual grant in Package Settings.
+LABEL org.opencontainers.image.source="https://github.com/kubeswift-io/gpucellpool"
+LABEL org.opencontainers.image.description="GPUCellPool operator: pools of VM-isolated, fractionally-shared GPU worker nodes"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532
