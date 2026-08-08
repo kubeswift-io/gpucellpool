@@ -259,21 +259,37 @@ a `MachineDeployment` and reads HAMi capacity — most of `-failure-model.md` §
 
 ---
 
-## 6. Startup budget (to be measured in Phase 1)
+## 6. Startup budget — MEASURED (2026-08-08, baked image, dev/boba, GTX 1080)
 
-| Stage | Expectation (prebaked image) |
-|---|---|
-| `SwiftGuest` created → launcher pod scheduled + GPU allocated | 2–15 s |
-| launcher → VM `Running` (CH, disk boot, VFIO bind) | 10–30 s |
-| VM boot → cloud-init done + kubelet started | 20–40 s |
-| kubelet → `Node Ready` | 10–30 s |
-| `Node Ready` → HAMi registers the device | 10–60 s |
-| **total `Pending`→`Ready`** | **~1–3 min** |
+The estimate below was optimistic by roughly 2x, and the miss is almost entirely in
+one stage the table did not name: cloning the 30 GiB root disk.
 
-`gpucell_cell_startup_seconds` records this per cell. If the real number lands
-above ~5 minutes, Phase 3 should be framed as *pre-warming* (keep a spare cell)
-rather than reactive autoscaling — a decision the metric makes for us instead of a
-guess made now.
+| Stage | Estimated | **Measured** |
+|---|---|---|
+| cell created → GPU allocated + launcher scheduled | 2–15 s | ~5 s |
+| launcher → VM `Running` (incl. **30 GiB root-disk clone**) | 10–30 s | **~3 min** |
+| VM `Running` → address reported (`Booting`) | 20–40 s | ~40 s |
+| address → workload `Node Ready` (`Joining`) | 10–30 s | ~20 s |
+| `Node Ready` → HAMi advertises the device | 10–60 s | ~35 s |
+| **total, guest created → `Ready`** | ~1–3 min | **4 min 45 s** |
+
+Install-at-boot (no baked driver) measured ~14 min, so baking is worth roughly 3x —
+and the remaining cost is storage, not software. Shrinking the root disk or using a
+copy-on-write clone strategy is where the next minute would come from, not from the
+guest.
+
+What the operator actually waits is longer than the cell startup: demand is noticed
+on the pool's resync (up to `requeueSteady`, 2 min), so request → usable capacity was
+**6 min 14 s** end to end.
+
+`gpucell_cell_startup_seconds` records the 4:45 figure — from the outer object's
+creation to the FIRST time the cell is Ready, so a later Ready after a regression is
+not counted as a startup.
+
+At ~5 minutes this sits exactly on the line the design drew for itself. Reactive
+autoscaling stays worthwhile (the scale-up stabilization window defaults to 10 min
+for precisely this reason), but a latency-sensitive pool should keep `minReplicas`
+above zero and treat scale-to-zero as a cost decision, not a default.
 
 ---
 
