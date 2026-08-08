@@ -348,3 +348,32 @@ func TestClusterAPIObjectsAreCoOwnedNotControlled(t *testing.T) {
 		}
 	}
 }
+
+// TestClusterAPIPoolDeletionDrainsItsMachines is the second bug a live cluster found:
+// pool teardown listed SwiftGuests, so a ClusterAPI pool saw no cells, drained
+// nothing, and dropped its own finalizer — leaving every cell Machine orphaned with
+// an unclearable drain finalizer and a GPU claim still held.
+func TestClusterAPIPoolDeletionDrainsItsMachines(t *testing.T) {
+	f := capiFixture(t, nil)
+	f.reconcile()
+	if !f.exists(provisioner.MachineGVK, "cells-0") {
+		t.Fatal("setup: no Machine")
+	}
+
+	pool := f.getPool()
+	if err := outerClient.Delete(context.Background(), pool); err != nil {
+		t.Fatalf("delete pool: %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		f.reconcile()
+		if !f.exists(provisioner.MachineGVK, "cells-0") {
+			break
+		}
+	}
+	if f.exists(provisioner.MachineGVK, "cells-0") {
+		t.Error("the cell Machine survived pool deletion, so it is orphaned with our finalizer")
+	}
+	if f.exists(provisioner.KubeSwiftMachineGVK, "cells-0") {
+		t.Error("the KubeSwiftMachine survived pool deletion, so its GPU claim leaks")
+	}
+}

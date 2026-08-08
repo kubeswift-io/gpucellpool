@@ -607,7 +607,12 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 		provider = r.provider(inner, hamiMode(pool))
 	}
 
-	guests, err := r.listCellGuests(ctx, pool)
+	// Through the provisioner, NOT a SwiftGuest list. A ClusterAPI pool owns
+	// Machines, so listing guests found nothing, drained nothing, and let the pool
+	// remove its own finalizer — orphaning every cell Machine with our drain
+	// finalizer still on it (unclearable, and still holding a GPU claim). Measured on
+	// a live CAPI cluster.
+	guests, err := prov.List(ctx, pool.Namespace, pool.Name)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
