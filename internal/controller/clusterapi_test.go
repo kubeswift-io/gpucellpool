@@ -254,3 +254,38 @@ func (f *testFixture) setMachinePhase(cell, phase string) {
 		f.t.Fatalf("set machine phase: %v", err)
 	}
 }
+
+// TestProvisionerSelection covers the reconciler's own defence. The CRD enum keeps
+// a bad value out at admission, so this branch is only reachable with the webhook
+// disabled — which is exactly when a silent fallback to SwiftGuest would create the
+// wrong objects in the infrastructure cluster without anyone being told.
+func TestProvisionerSelection(t *testing.T) {
+	r := &GPUCellPoolReconciler{}
+	for _, tc := range []struct {
+		name, spec, want string
+		wantErr          bool
+	}{
+		{name: "default", spec: "", want: provisioner.ProvisionerSwiftGuest},
+		{name: "explicit SwiftGuest", spec: provisioner.ProvisionerSwiftGuest, want: provisioner.ProvisionerSwiftGuest},
+		{name: "ClusterAPI", spec: provisioner.ProvisionerClusterAPI, want: provisioner.ProvisionerClusterAPI},
+		{name: "unknown", spec: "Terraform", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := &cellsv1alpha1.GPUCellPool{}
+			pool.Spec.Cell.Provisioner = tc.spec
+			got, err := r.provisioner(pool)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("accepted provisioner %q as %s", tc.spec, got.Name())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("provisioner(%q): %v", tc.spec, err)
+			}
+			if got.Name() != tc.want {
+				t.Errorf("provisioner(%q) = %s, want %s", tc.spec, got.Name(), tc.want)
+			}
+		})
+	}
+}
