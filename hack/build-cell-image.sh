@@ -10,7 +10,10 @@
 set -euo pipefail
 
 OUT="${OUT:-/tmp/claude-1000/-home-wrkode-code-vmm-kubeswift-kubeswift/c6001214-37be-44cd-ae40-c65efde23337/scratchpad/cellpoc/build}"
-QEMU="${QEMU:-/opt/kata/bin/qemu-system-x86_64}"
+# The DISTRO qemu, deliberately: a Kata build (which may come first in PATH at
+# /opt/kata/bin) is compiled without user-mode networking, so the guest gets no
+# egress and the bake dies mid-apt with nothing obviously wrong.
+QEMU="${QEMU:-/usr/bin/qemu-system-x86_64}"
 BIOS="${BIOS:-/usr/share/seabios/bios-256k.bin}"
 BASE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
 # Pascal (GTX 1080) needs the PROPRIETARY driver: the open kernel modules are
