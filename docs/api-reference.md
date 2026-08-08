@@ -258,6 +258,7 @@ cannot misconfigure a cell.
 | `cell.gpu.count != 1` | create, update | multi-GPU cells |
 | `cell.gpu.backend` set with the wrong sub-struct (`native` with `DRA`, `dra` with `Native`, or missing) | create, update | mixed or absent backend config |
 | `cell.gpu.dra`: not exactly one of `resourceClaimTemplateName`/`resourceClaimName` | create, update | both or neither set |
+| `cell.gpu.dra.resourceClaimName` set with `spec.replicas > 1`, or with `autoscaling.enabled` and `autoscaling.maxReplicas > 1` | create, update | a shared claim backing more than one cell would double-book the device — use `resourceClaimTemplateName` for a pool that can grow |
 | `cell.gpu.dra.tier != pcie` | create, update | `hgx-shared`, `hgx-full` |
 | `guestTemplate` sets an operator-owned or denied field | create, update | see the field contract above |
 | `guestTemplate.guestClassRef` / `.imageRef` unset | create, update | a GPU cell must be a disk boot |

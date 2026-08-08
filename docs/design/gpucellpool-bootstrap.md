@@ -1,5 +1,10 @@
 # GPUCellPool — cell bootstrap
 
+> Design record, written before implementation (2026-07-30) and partially
+> updated. It documents rationale, not current behaviour — see `docs/` for
+> that, in particular `docs/cell-image.md`, `docs/networking.md` and
+> `config/samples/cell-join-secret.yaml`.
+
 > A cell must become a GPU-capable Kubernetes worker in the *workload* cluster.
 > Decision: **prebaked image + thin cloud-init enrollment**, with the join
 > credential delivered by Secret reference and never written into a CR.
@@ -23,7 +28,7 @@ Notes that bite:
 
 - HAMi's `LD_PRELOAD` core also documents **glibc ≥ 2.17 and < 2.30** — that is a
   constraint on the *workload container image*, not the node, but it must be
-  verified in Phase 1 or every PoC workload silently runs unlimited (`-poc.md` R6).
+  verified in Phase 1 or every PoC workload silently runs unlimited (`-validation-record.md` R6).
 - A cell needs **no** Fabric Manager, no IOMMU config in the guest, and no
   hugepages unless `cell.gpu.dra.hugepages` is set: it is a flat single-GPU `pcie`
   guest.
@@ -90,10 +95,15 @@ Two deliberate choices:
   kubelet must bind the latter — the same rule `capi-kubeswift` follows.
 - **Preflight is non-fatal.** A node that joins *without* a GPU is diagnosable —
   the pool parks it in `AwaitingGPUCapacity` with a message and a timeout. A node
-  that refuses to join is opaque. Loud, not silent: the preflight result is logged
-  to the console and, in Phase 2+, written as a node annotation
-  `cells.kubeswift.io/gpu-preflight: "0/1"` which the controller surfaces verbatim
-  in `status.cells[].message`.
+  that refuses to join is opaque. **As shipped, preflight is log-only, not the
+  node-annotation surface this paragraph originally planned**: the reference
+  cell image (`hack/build-cell-image.sh`) writes the result to
+  `/run/gpu-cell-preflight` inside the guest, and the diagnostic path is
+  `swiftctl ssh <cell> -- cat /run/gpu-cell-preflight` (see `docs/runbook.md`).
+  The Go constant `cells.kubeswift.io/gpu-preflight`
+  (`AnnotationGPUPreflight`, `api/v1alpha1/conditions.go`) exists for a future
+  node-annotation surface but nothing writes it or reads it yet — do not
+  document it as available.
 
 Kubelet self-labelling with a third-party prefix is permitted under the
 `NodeRestriction` admission plugin (it only constrains `kubernetes.io`/`k8s.io`
@@ -232,30 +242,44 @@ default and the one that must work.
 
 ---
 
-## 5. Why not delegate bootstrap to Cluster API in the MVP
+## 5. Why not delegate bootstrap to Cluster API in the MVP (and what shipped instead)
+
+**This section is entirely historical.** It was written to argue against
+building a CAPI provisioner for the MVP, before one existed. `provisioner:
+ClusterAPI` has since shipped and is hardware-validated — see
+`docs/clusterapi-cells.md`. Two things below were wrong even as a plan, not
+just overtaken by events: it describes the mechanism as sizing a
+**`MachineDeployment`**, but the shipped provisioner creates **one `Machine` +
+`KubeSwiftMachine` per cell**, named after the cell — a `MachineDeployment`
+generates its own Machine names, which would have broken the
+cell-name-equals-Node-name identity the whole design rests on (see D8 in
+`-overview.md` and `docs/clusterapi-cells.md`). Kept for the reasoning that is
+still valid: why CAPI was, and remains, a *second* provisioner rather than a
+replacement for `SwiftGuest`.
 
 CAPI solves exactly this problem — a bootstrap provider produces the cloud-init
 Secret, and `capi-kubeswift` already consumes it verbatim into a `SwiftSeedProfile`.
-So the honest evaluation:
+So the honest evaluation, as it stood before implementation:
 
-**Blocking reason:** a `MachineDeployment` can only add Machines to a
+**Blocking reason (still true):** Cluster API can only add Machines to a
 **CAPI-managed** cluster. The target use case is *bring your own workload cluster*
 (HAMi already installed, possibly not CAPI-managed at all). A CAPI-only design
-cannot serve it, so CAPI must be a **second provisioner**, never the only one (D8).
+cannot serve it, so CAPI is a **second provisioner**, never the only one (D8).
 
-**Secondary reason:** `capi-kubeswift` has no GPU surface today (verified: zero
-`gpu` hits across `api/`, `internal/`, `templates/`). Phase 5 needs
-`KubeSwiftMachine.spec.backend.swiftGuest.gpu` (a `gpuResourceClaim`/`gpuProfileRef`
-passthrough) added there first — a small, well-scoped change in a repo the same team
-owns, but a cross-repo dependency the MVP should not be blocked on.
+**Secondary reason (resolved):** at the time of writing, `capi-kubeswift` had
+no GPU surface (verified then: zero `gpu` hits across `api/`, `internal/`,
+`templates/`). That blocker is gone: `capi-kubeswift` v0.2.0 ships
+`KubeSwiftMachine.spec.backend.swiftGuest.gpu` and `nodeName` placement.
 
-**What CAPI buys when the workload cluster *is* CAPI-managed** — and why Phase 5 is
-worth doing: bootstrap providers + token rotation for free, `Machine`↔`Node`
-correlation for free, node drain on Machine deletion for free, rolling updates for
-free. Under `provisioner: ClusterAPI` the pool becomes a thin controller that sizes
-a `MachineDeployment` and reads HAMi capacity — most of `-failure-model.md` §2 and
-§5 becomes someone else's tested code. The `CellProvisioner` seam
-(`-reconciliation.md` §1) exists so that transition is additive.
+**What CAPI buys when the workload cluster *is* CAPI-managed** — realized, not
+just planned: `Machine`↔`Node` correlation via `providerID`, and the cluster's
+own bootstrap provider supplying join credentials per cell
+(`bootstrapConfigTemplateRef`, instantiated once per cell the way a
+`MachineSet` does — see `docs/clusterapi-cells.md`). **Not** realized: node
+drain on Machine deletion and rolling updates are not automatic — see
+`docs/limitations.md`, which applies identically to both provisioners. The
+`CellProvisioner` seam (`-reconciliation.md` §1) is what made adding the
+provisioner additive rather than a rewrite.
 
 ---
 

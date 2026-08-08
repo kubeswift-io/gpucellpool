@@ -1,5 +1,13 @@
 # GPUCellPool — v1alpha1 API
 
+> Design record, written before implementation (2026-07-30) and not updated
+> since — `spec.autoscaling` and `cell.clusterAPI` are absent below because
+> they were designed after this file was written, and the shipped status
+> fields (`status.desiredReplicas`, `status.demand`, `status.cellDeviceShape`)
+> are likewise missing. **For the current API, read `docs/api-reference.md`
+> instead** — it is generated from the Go types and the validating webhook.
+> This file remains for the field-contract *reasoning* (§4, §8).
+
 > One CRD. Cells are owned `SwiftGuest`s, not a second kind (D1). The cell's VM
 > shape is an **opaque `SwiftGuestSpec` passthrough** so this API never chases
 > KubeSwift's (D4); GPU, identity, bootstrap and node enrollment are first-class

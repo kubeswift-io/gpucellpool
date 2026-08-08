@@ -1,105 +1,119 @@
-# ClusterAPI cells — validated recipe and what it cost
+# Cells as Cluster API Machines
 
-> `provisioner: ClusterAPI` was validated end to end on real hardware on
-> **2026-08-08** (dev/boba, GTX 1080, CAPI v1.13.4, capi-kubeswift @ main,
-> Kubernetes v1.33.3, HAMi 2.9.0). Everything below is measured, including the
-> mistakes.
+`spec.cell.provisioner: ClusterAPI` makes each cell a Cluster API `Machine` +
+`KubeSwiftMachine`, instead of a bare `SwiftGuest`. Use it when the workload
+cluster your cells join is **already Cluster-API-managed** and you want the
+GPU cells to be first-class members of it — visible as Machines, carrying a
+`providerID`, participating in the cluster's own node lifecycle — rather than
+nodes that joined out of band.
 
-## What was proven
+It is an **additional** provisioner, never a replacement for the default
+(`SwiftGuest`): Cluster API can only add Machines to a cluster it already
+manages, and the common case for this operator is bring-your-own workload
+cluster, which is not CAPI-managed at all. If your workload cluster is not
+CAPI-managed, use the default `SwiftGuest` provisioner instead — see
+`docs/quickstart.md`.
 
-A `GPUCellPool` added the only worker of a CAPI-managed workload cluster:
+Validated end to end on hardware (dev/boba, GTX 1080): pool created to cell
+`Ready` in 6m29s, two workloads sharing the cell's GPU through HAMi, clean
+teardown. The post-mortem — two bugs a live cluster found that the test
+harness could not, plus a step-by-step recipe for standing up a CAPI-managed
+workload cluster on a lab with no cross-node L2 — is in
+`docs/design/clusterapi-cells-validation.md`; this page is the how-to.
+
+## Prerequisites
+
+In addition to everything in `docs/quickstart.md`'s prerequisite table:
 
 | | |
 |---|---|
-| pool created → cell `Ready` | **6 min 29 s** |
-| Cluster API's view | `Machine cells-0` `Running`, `providerID kubeswift://capicell/cells-0`, `nodeRef cells-0` |
-| workload cluster's view | Node `cells-0` `Ready`, same providerID |
-| HAMi's view | `GPU-e71afe85…` GTX 1080, `devmem 8192`, `devcore 100`, healthy |
-| the pool | `physicalCapacity{gpus 1}` + `workloadCapacity{1 device, 8Gi}`, reported separately |
-| two workloads at 3000 MiB / 30 % | both `Running` on `cells-0`, **same GPU UUID**, pool at `6000Mi allocated / 2192Mi available`, compute `60/40` |
-| teardown | pool deleted → Machine and KubeSwiftMachine gone in ~16 s, pool finalizer released at 47 s, GPU claim returned, Node reaped |
+| Cluster API | `>= v1.13.4` — the validated floor. (An earlier draft of this project's sample referenced `>= v1.11`; `v1.13.4` is the version this was actually proven against and is the one to target.) |
+| `cluster-api-provider-kubeswift` | `>= v0.2.0` — the release that ships `KubeSwiftMachine.spec.backend.swiftGuest.gpu` and `nodeName` placement. Earlier versions have no GPU surface at all |
+| a CAPI `Cluster` | already provisioned, in the pool's own namespace (a pool never crosses namespaces) |
+| a bootstrap config template (optional) | e.g. a `KubeadmConfigTemplate`, if you want the workload cluster's own bootstrap provider to mint join credentials per cell instead of maintaining `spec.bootstrap` yourself |
 
-The FSM walked `AllocatingGPU → Joining → AwaitingGPUCapacity → Ready`, holding in
-`AwaitingGPUCapacity` exactly while HAMi's device plugin started. The three-way Ready
-gate behaves the same through Cluster API as it does without it.
+## Why one Machine per cell, not a MachineDeployment
 
-## Two bugs only a live cluster could find
+A cell's identity model (`docs/concepts.md`) depends on the cell name, the
+guest hostname, and the workload Node name being the *same string*. A
+`MachineDeployment` generates its own Machine names, and `capi-kubeswift`
+derives the guest hostname — and therefore the Node name — from the Machine
+name. Random names would break that identity and leave no way to drain or
+replace one specific cell. So GPUCellPool creates exactly one `Machine` +
+`KubeSwiftMachine` per cell, named `<pool>-<index>` like every other cell
+object, and reconciles them the way it reconciles `SwiftGuest`s under the
+default provisioner.
 
-Both were invisible to the envtest harness, for the same reason: **a CRD stub accepts
-anything, because the thing that objects is the controller that is not running there.**
+## What a `KubeSwiftMachine` can express
 
-1. **The pool claimed the controller owner reference.** Kubernetes allows one per
-   object and Cluster API needs it (the Cluster on the Machine, the Machine on the
-   infrastructure object). CAPI failed every reconcile with *"Object cells-0 is already
-   owned by another GPUCellPool controller"* — a hard stop: no bootstrap data, no VM,
-   ever. Cells are now **co-owned** (plain owner reference), which is all that garbage
-   collection needs.
+A `KubeSwiftMachine` exposes a curated subset of `SwiftGuestSpec`: image,
+guest class, up to two network interfaces, and GPU. Under
+`provisioner: ClusterAPI`, `guestTemplate` is therefore restricted to
+`imageRef`, `guestClassRef`, `interfaces` — anything else (data disks,
+storage class, topology spread constraints) is **rejected at admission**
+rather than silently dropped, because a cell that boots with less than you
+asked for is worse than a pool that refuses to be created. See
+`docs/api-reference.md` for the exact validation rule.
 
-2. **Pool teardown listed SwiftGuests.** A ClusterAPI pool owns Machines, so deletion
-   saw no cells, drained nothing, and dropped the pool finalizer — orphaning each cell
-   Machine with `cells.kubeswift.io/cell-drain` still on it. Nothing was left to clear
-   it, so the Machine could never be deleted and its GPU claim never came back.
-   Observed exactly that, and cleared it only by patching the finalizer out by hand.
-   Deletion now goes through `prov.List`, and the dead lister is gone.
+## Apply
 
-## What the workload cluster needs (dev recipe)
-
-The pool is the easy half. Getting a CAPI-managed cluster onto KubeSwift on a lab with
-no cross-node L2 took four things worth writing down.
-
-**A way to place the control plane.** The CP VM and the GPU cell must share the
-node-local bridge NAD, which means sharing a host — and the cell's host is fixed by
-where its GPU is. Cluster API cannot place an individual Machine, so
-`KubeSwiftMachine.spec.backend.swiftGuest.nodeName` was added
-(capi-kubeswift [#20](https://github.com/kubeswift-io/cluster-api-provider-kubeswift/pull/20)).
-It rejects being combined with `gpu`: pinning bypasses the scheduler, and a DRA claim
-is allocated *by* the scheduler, so the pair yields a VM with an unallocated claim and
-no device.
-
-**The control-plane endpoint hairpins back into the control plane VM.** With
-`endpoint.mode: Service` the endpoint is a ClusterIP in the *management* cluster whose
-backend is the CP's own launcher pod. `kubeadm init`'s `wait-control-plane` phase health
-checks through it, so the request goes VM → in-pod MASQUERADE → node → Service → the
-same pod → back to the VM, and conntrack cannot match the reply:
-
+```yaml
+apiVersion: cells.kubeswift.io/v1alpha1
+kind: GPUCellPool
+metadata:
+  name: inference
+  namespace: gpu-cells
+spec:
+  replicas: 2
+  cell:
+    provisioner: ClusterAPI
+    clusterAPI:
+      clusterName: inference        # the CAPI Cluster in this namespace
+      version: v1.33.3
+      bootstrapConfigTemplateRef:    # optional — omit to use spec.bootstrap instead
+        apiGroup: bootstrap.cluster.x-k8s.io
+        kind: KubeadmConfigTemplate
+        name: gpu-workers
+    guestTemplate:
+      guestClassRef: {name: gpu-worker-32c-128g}
+      imageRef: {name: gpu-worker-noble-580}
+      interfaces:
+        - {name: mgmt, primary: true}
+        - {name: node, networkRef: {name: cell-udn}}
+    nodeIPFrom: node
+    gpu:
+      backend: DRA
+      dra: {resourceClaimTemplateName: single-vfio-gpu}
+  workloadCluster:
+    kubeconfigSecretRef: {name: inference-kubeconfig}
+    node:
+      labels: {gpu: "on"}
 ```
-error execution phase wait-control-plane: kube-apiserver check failed at
-https://192.168.99.10:6443/livez: Get "https://10.96.212.189:6443/livez?timeout=10s":
-context deadline exceeded
-```
 
-The failure is quiet in the worst way: every control-plane static pod is `Running`, so
-the cluster looks alive, while `kubeadm-config`, `kubelet-config`, `cluster-info`, the
-bootstrap tokens, the control-plane role label, kube-proxy and CoreDNS are all absent.
-Fix: alias the endpoint address on `lo` in the guest, so in-guest clients reach the
-apiserver locally. **Control plane only** — a worker must reach the real Service.
+The full, heavily-commented sample is at
+`config/samples/cells_v1alpha1_gpucellpool_clusterapi.yaml`.
 
-**That alias must come after the node-IP derivation.** It is a scope-global address, so
-deriving "the global IPv4 that is not on the default route" afterwards picks up the
-alias and the node registers with the endpoint ClusterIP as its `InternalIP`. Measured,
-and it silently breaks apiserver→kubelet. Exclude `lo` as well.
+When `bootstrapConfigTemplateRef` is set, do **not** also set
+`spec.bootstrap.joinSecretRef` — the workload cluster's own bootstrap provider
+supplies the join data, instantiated once per cell the way a `MachineSet`
+does, and the webhook rejects the redundant Secret reference rather than
+silently ignoring it. Omit `bootstrapConfigTemplateRef` and the pool's own
+rendered Secret is handed to the Machine as `bootstrap.dataSecretName` instead
+— that works, but the join data (token validity, CA rotation) is then yours
+to keep working, same as under the `SwiftGuest` provisioner.
 
-**Then the documented single-CP hairpin still applies** *inside* the workload cluster:
-`masqueradeAll: true` in the kube-proxy ConfigMap (capi-kubeswift
-`docs/operations/single-control-plane-hairpin.md`, fix 3), or the CNI on the lone
-control-plane node never starts. And the CNI must be pinned to the datapath interface —
-flannel picks the default-route interface, which here is KubeSwift's node-local nat
-primary, the wrong side (`--iface-regex=10\.79\.0\.\d+`).
+## Watching and diagnosing
 
-Two smaller ones: a CP-only cluster needs its control-plane taint removed or nothing
-schedules, and `SwiftImage.spec.format` is the **input** format — declaring `raw` for
-the Ubuntu qcow2 cloud image skips conversion and hands Cloud Hypervisor a qcow2 it
-reads as raw (`Failed to get refcount`, in under a minute of "importing").
+The FSM and `status.cells[]` behave identically to the `SwiftGuest`
+provisioner — see `docs/api-reference.md` and `docs/runbook.md`. Two
+CAPI-specific entries worth knowing:
 
-## Capacity arithmetic, since it bites
-
-boba has 8 cores. A 4-vCPU control plane plus a 2-vCPU cell does not fit alongside the
-node's existing load, and with `nodeName` the kubelet says so immediately —
-`OutOfcpu: requested 4000, used 7790, capacity 8000` — rather than leaving the pod
-Pending. The validated shape is a **2-vCPU** control plane (`capicell-cp`) and a 2-vCPU
-cell.
-
-Do not delete Machines mid-rollout to force a change: KubeadmControlPlane holds a
-pre-terminate hook on the last control plane and will not release it until a
-replacement joins, so you deadlock (`stage: WaitingForPreTerminateHook`). Delete the
-`Cluster` and rebuild instead.
+- Cells are discovered by listing **Machines** labelled
+  `cells.kubeswift.io/pool=<pool>`, not SwiftGuests. If the pool reports no
+  cells despite Machines existing, the label did not survive — see the
+  runbook.
+- A cell only leaves `AllocatingGPU` once `capi-kubeswift` has provisioned the
+  backing `SwiftGuest` and stamped a `providerID` on the `KubeSwiftMachine` —
+  the GPU is found by following that reference. An empty `providerID` with the
+  `Machine` still `Provisioning` is normal; a `Provisioned` `Machine` with no
+  `providerID` is a `capi-kubeswift` problem, not a pool problem.

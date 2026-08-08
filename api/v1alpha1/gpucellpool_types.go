@@ -26,7 +26,14 @@ type GPUCellPoolSpec struct {
 	Cell CellSpec `json:"cell"`
 
 	// Bootstrap describes how a cell becomes a worker of the workload cluster.
-	Bootstrap BootstrapSpec `json:"bootstrap"`
+	//
+	// Optional because it is genuinely unused when the workload cluster's own Cluster
+	// API bootstrap provider supplies the join data (cell.clusterAPI.
+	// bootstrapConfigTemplateRef). Requiring it there forced an empty `bootstrap: {}`
+	// into the manifest to satisfy the schema — a field you must write and nothing
+	// reads. The webhook still requires joinSecretRef whenever it IS the join path.
+	// +optional
+	Bootstrap BootstrapSpec `json:"bootstrap,omitempty"`
 
 	// WorkloadCluster is the cluster the cells join and where HAMi runs.
 	WorkloadCluster WorkloadClusterSpec `json:"workloadCluster"`

@@ -1,0 +1,35 @@
+# A minimal Multus NAD carrying a ROUTABLE address for cell traffic.
+#
+# Every GPU cell needs a routable interface, not just KubeSwift's node-local nat
+# egress: the workload apiserver must be able to dial the cell's kubelet for
+# logs, exec, port-forward and metrics (docs/networking.md). Reference this NAD
+# from cell.guestTemplate.interfaces[].networkRef, and point cell.nodeIPFrom at
+# that interface's name.
+#
+# This bridge+host-local shape is enough while every VM that needs to reach it
+# (including a workload-cluster control plane, if it is itself a KubeSwift
+# guest) is scheduled on the SAME infrastructure node — KubeSwift's br0 lives
+# inside each launcher pod's own network namespace, so there is no way for two
+# guests on different nodes to reach each other over it. Cross-node reachability
+# needs KubeSwift's routable secondary-NAD shape (see the KubeSwift networking
+# docs) — apply the equivalent of that NAD instead if your cells span nodes.
+apiVersion: k8s.cni.cncf.io/v1
+kind: NetworkAttachmentDefinition
+metadata:
+  name: cell-net
+  namespace: gpu-cells
+spec:
+  config: |
+    {
+      "cniVersion": "0.4.0",
+      "name": "cell-net",
+      "type": "bridge",
+      "bridge": "cellbr0",
+      "isGateway": true,
+      "ipam": {
+        "type": "host-local",
+        "subnet": "10.77.0.0/24",
+        "rangeStart": "10.77.0.10",
+        "rangeEnd": "10.77.0.250"
+      }
+    }

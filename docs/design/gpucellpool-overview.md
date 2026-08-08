@@ -1,16 +1,23 @@
 # GPUCellPool — overview and architecture
 
+> Design record, written before implementation (2026-07-30) and partially
+> updated. It documents rationale, not current behaviour — see `docs/` for
+> that.
+
 > A **composition operator**: KubeSwift provides VM-isolated, whole-GPU-passthrough
 > Kubernetes workers; HAMi fractionally shares the GPU inside them. `GPUCellPool`
 > owns the lifecycle between the two layers and knows about both — while neither
 > KubeSwift nor HAMi is modified, and neither learns about the other.
 >
-> Status: **DESIGN (first pass)** — grounded in source inspection of
-> `kubeswift-io/kubeswift` @ v0.13.4 and `capi-kubeswift`, plus HAMi upstream
-> (`Project-HAMi/HAMi`, `Project-HAMi/k8s-dra-driver`, `Project-HAMi/HAMi-DRA`).
-> No hardware proof yet — Phase 1 is the hardware gate.
+> Status: **SHIPPED as v0.1.0 (2026-08-08), hardware-validated** — see §5 and
+> §8. Originally written as a first-pass design grounded in source inspection
+> of `kubeswift-io/kubeswift` @ v0.13.4 and `capi-kubeswift`, plus HAMi
+> upstream (`Project-HAMi/HAMi`, `Project-HAMi/k8s-dra-driver`,
+> `Project-HAMi/HAMi-DRA`), before any hardware proof existed. Left largely
+> as-written for the decision record; do not trust phase/status language
+> below over §5 and §8.
 > Companions: `gpucellpool-api.md`, `-reconciliation.md`, `-bootstrap.md`,
-> `-capacity.md`, `-failure-model.md`, `-poc.md`. Date: 2026-07-30.
+> `-capacity.md`, `-failure-model.md`, `-validation-record.md`. Date: 2026-07-30.
 
 ---
 
@@ -88,8 +95,12 @@ Kubernetes worker. Reusable findings:
 - The validated multi-node worker shape is **dual-NIC**: nat `mgmt` primary +
   `networkRef` `node` interface carrying the routable IP, with kubelet
   `--node-ip` set to the secondary.
-- **It has no GPU support at all** (`grep -i gpu api/ internal/ templates/` → 0
-  hits). Any CAPI-based cell provisioner needs a GPU field added there first. → D8.
+- **At the time this was written it had no GPU support at all**
+  (`grep -i gpu api/ internal/ templates/` → 0 hits). Any CAPI-based cell
+  provisioner needed a GPU field added there first (→ D8). **Resolved**:
+  `capi-kubeswift` v0.2.0 ships `KubeSwiftMachine.spec.backend.swiftGuest.gpu`
+  and `nodeName` placement; `provisioner: ClusterAPI` is shipped and
+  hardware-validated against it (§5, `docs/clusterapi-cells.md`).
 
 ### HAMi (inner) — two accounting models, both readable
 
@@ -104,7 +115,7 @@ Kubernetes worker. Reusable findings:
 Extra HAMi facts that shape the PoC: HAMi-core needs NVIDIA driver ≥ 440 and —
 notably — **glibc ≥ 2.17 and < 2.30 in the workload container image** for its
 `LD_PRELOAD` interposition. That is a workload-image constraint, not a node
-constraint, and it is a Phase-1 verification item (`-poc.md` R6).
+constraint, and it is a Phase-1 verification item (`-validation-record.md` R6).
 
 ---
 
@@ -113,7 +124,7 @@ constraint, and it is a Phase-1 verification item (`-poc.md` R6).
 | # | Question | Decision | Why |
 |---|---|---|---|
 | D1 | per-Cell CRD or `SwiftGuest` directly? | **No `GPUCell` CRD.** One CRD (`GPUCellPool`); a cell *is* an owned `SwiftGuest` named `<pool>-<index>`, with per-cell state in `status.cells[]` and the drain finalizer on the guest | `SwiftGuestPool` proves counters-plus-owned-objects is enough; and if CAPI lands (D8) the *`Machine`* becomes the per-cell object — inventing `GPUCell` now guarantees a third, doomed object |
-| D2 | `replicas` or `min/max` in v1alpha1? | **`spec.replicas: int32` + scale subresource.** `min/max` arrives later inside `spec.autoscaling` | HPA-ready day one (same seam as `SwiftGuestPool`/`SwiftSandboxPool`); a scaling block is additive, whereas demoting `replicas` later is not |
+| D2 | `replicas` or `min/max` in v1alpha1? | **`spec.replicas: int32` + scale subresource, PLUS `spec.autoscaling.{minReplicas,maxReplicas}` — shipped, not deferred.** | HPA-ready day one (same seam as `SwiftGuestPool`/`SwiftSandboxPool`); a scaling block is additive, whereas demoting `replicas` later would not have been |
 | D3 | cell identity across clusters | **Name-derived, not IP-derived**: cell name = `<pool>-<index>` = guest name = guest hostname = **Node name**; verified by node labels `gpu-cell.kubeswift.io/{pool,cell}` and an *instance* label carrying the guest UID | deterministic, reconstructible after operator restart, and detects a stale Node left by a previous incarnation of the same index |
 | D4 | cell shape in the API | **Opaque `SwiftGuestSpec` passthrough** (`cell.guestTemplate`, preserve-unknown-fields) + first-class `cell.gpu`, with an operator-owned/denied field contract enforced by a webhook | never chases KubeSwift's API surface (mirrors `SwiftGuestPool.spec.template.spec`); GPU stays first-class because the operator must own the tier/backend semantics |
 | D5 | HAMi coupling | **`CapacityProvider` interface, one implementation (`HAMi`), two modes** (`DevicePlugin`, `DRA`). No HAMi Go dependency; annotations/ResourceSlices are read as data | HAMi DRA is `v0.1.0` — isolate it so its churn cannot reach the CRD |
@@ -132,11 +143,11 @@ constraint, and it is a Phase-1 verification item (`-poc.md` R6).
  ┌───────────────────────────────────────────────────────────────┐
  │ GPUCellPool controller                                        │
  │   ├── CellManager        index/name allocation, per-cell FSM   │
- │   ├── CellProvisioner    SwiftGuest (v1) | ClusterAPI (later)  │
+ │   ├── CellProvisioner    SwiftGuest | ClusterAPI (both shipped)│
  │   ├── PhysicalInventory  outer ResourceSlices/Claims → free GPUs│
  │   ├── WorkloadClient     one cached client per kubeconfig      │
  │   ├── CapacityProvider   HAMi{DevicePlugin|DRA} (inner reads)  │
- │   └── ScalingPolicy      static (v1) → demand-driven (Ph. 3)   │
+ │   └── ScalingPolicy      static, or demand-driven (both ways)  │
  │            │ owns                                             │
  │            ▼                                                  │
  │   SwiftGuest <pool>-0 … <pool>-N   (+ SwiftSeedProfile each)   │
@@ -202,9 +213,12 @@ migration — a VM restart. Applied to a cell, that silently reboots a Kubernete
 worker with running HAMi workloads on it. v1alpha1 therefore stamps
 `migration.enabled: false` on every cell guest (pinned) and surfaces a
 `CellDrainRequested` condition when the outer node is cordoned or KubeSwift sets
-`kubeswift.io/drain-requested`. The operator (human) then scales/replaces. Phase 4
-automates the correct order: cordon inner Node → drain inner workloads → delete
-cell → recreate elsewhere. Never the reverse.
+`kubeswift.io/drain-requested`. The operator (human) then scales/replaces. **This
+remains true in the shipped v0.1.0**: no phase automates the correct order
+(cordon inner Node → drain inner workloads → delete cell → recreate elsewhere).
+It is a manual runbook step today — see `docs/limitations.md` and
+`docs/runbook.md`. If automated forever, delete this sentence; if it lands, cite
+the PR instead.
 
 **(b) The GPU is released by deleting the cell, not by draining it.** Outer
 capacity only returns to the pool when the `SwiftGuest` is gone (native backend:
@@ -233,13 +247,13 @@ GPU-sharing alone provides.
 | 0 | this design set | — |
 | 1 | hardware proof: GPU → cell VM → nvidia driver → HAMi → 2 fractional workloads, done by hand | **boba/GTX 1080; blocks everything** |
 | 2 | static `GPUCellPool` (MVP, §5) | Phase 1 PASS |
-| 3 | demand-driven scale-**up** (pending-pod signal, guarded) — **DONE** | Phase 2 stable |
-| 4 | safe scale-**down** + automated outer-drain sequencing | Phase 3 stable |
-| 5 | `provisioner: ClusterAPI` — the `capi-kubeswift` GPU field landed as PR #19; the provisioner itself is next | Phase 2; independent of 3/4 |
+| 3 | demand-driven scale-**up** (pending-pod signal, guarded) — **SHIPPED** | Phase 2 stable |
+| 4 | safe scale-**down** — **SHIPPED**; automated outer-drain sequencing (cordon inner Node → drain → delete → recreate) — **NOT implemented**, see §6(a) | Phase 3 stable |
+| 5 | `provisioner: ClusterAPI` — **SHIPPED and hardware-validated** (2026-08-08); the `capi-kubeswift` GPU field landed as its PR #19/v0.2.0 | Phase 2; independent of 3/4 |
 
 The lab has exactly **one** GPU (boba, GTX 1080). Phase 1 is fully doable;
 `replicas ≥ 2` is hardware-gated and must be validated against a faked capacity
-provider + faked inner Nodes (`-poc.md` §6), the same way KubeSwift validates HGX.
+provider + faked inner Nodes (`-validation-record.md` §6), the same way KubeSwift validates HGX.
 
 ---
 

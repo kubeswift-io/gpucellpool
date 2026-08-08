@@ -12,8 +12,9 @@
 #
 # Extra prerequisites in the INFRASTRUCTURE cluster (which is also the CAPI
 # management cluster here):
-#   - Cluster API >= v1.11 (contract v1beta2) and cluster-api-provider-kubeswift
-#     >= the release carrying KubeSwiftMachine spec.backend.swiftGuest.gpu
+#   - Cluster API >= v1.13.4 (the validated floor; see docs/clusterapi-cells.md)
+#     and cluster-api-provider-kubeswift >= v0.2.0, which ships the GPU surface
+#     (KubeSwiftMachine spec.backend.swiftGuest.gpu) and nodeName placement
 #   - a CAPI Cluster named below, already provisioned, in this namespace
 #   - the bootstrap template below, if you use one
 apiVersion: cells.kubeswift.io/v1alpha1

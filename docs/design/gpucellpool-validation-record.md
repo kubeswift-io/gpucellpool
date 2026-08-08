@@ -1,4 +1,11 @@
-# GPUCellPool — proof of concept and test strategy
+# GPUCellPool — validation record
+
+> Design record — a **results record, not a plan** (renamed from `-poc.md`,
+> which it was originally written as before the results in §8a/§8b/§9 landed).
+> Written before implementation (2026-07-30) and partially updated. It
+> documents rationale and measurements, not current behaviour — see `docs/`
+> for that, in particular `docs/quickstart.md` and
+> `docs/design/gpucellpool-bootstrap.md` §6 for the current startup numbers.
 
 > Phase 1 is a **hardware proof done by hand**: physical GPU → KubeSwift VM →
 > in-guest NVIDIA driver → HAMi → two fractionally-limited workloads on the same
@@ -6,7 +13,7 @@
 >
 > Lab: dev k0s cluster (frida CP, miles/boba workers), **one GTX 1080 on boba**,
 > CH v53.0, KubeSwift v0.13.4. Point `KUBECONFIG` at the infrastructure cluster.
-> Date: 2026-07-30.
+> Date: 2026-07-30. Results recorded 2026-08-07/08 in §8a/§8b/§9 below — **PASS**.
 
 ---
 
@@ -97,7 +104,10 @@ Install HAMi on the inner cluster (prerequisite, D6), label the node `gpu=on`, t
 
 ```bash
 kubectl get node <cell> -o jsonpath='{.metadata.annotations.hami\.io/node-nvidia-register}' | jq .
-# [{"id":"GPU-…","count":10,"devmem":8192,"devcore":100,"type":"NVIDIA-GeForce-GTX-1080","numa":0,"health":true}]
+# The real captured shape (§8a): the model string has SPACES, not hyphens, and
+# there is no "numa" field — older documentation showing "numa" is wrong; do
+# not assume it will be present.
+# [{"id":"GPU-…","count":10,"devmem":8192,"devcore":100,"type":"NVIDIA GeForce GTX 1080","health":true}]
 kubectl get node <cell> -o jsonpath='{.status.allocatable}' | jq '."nvidia.com/gpu"'   # 10, NOT 1
 ```
 
@@ -242,8 +252,10 @@ Findings that change the design or the image recipe:
 `build-cell-image.sh` produced a 30 GiB raw disk, **5.5 GiB sparse**,
 `BAKE_EXIT=0`, containing driver 580.173.02 (kernel 6.8.0-136-generic), the NVIDIA
 container toolkit, `k0s v1.36.3+k0s.0`, the k0s containerd nvidia drop-in, the CDI
-generate unit, and a reset cloud-init/machine-id/host-keys. Not yet published;
-`swiftctl image publish <raw> --to ghcr.io/… --tag …` is the remaining step.
+generate unit, and a reset cloud-init/machine-id/host-keys. At the time this
+paragraph was written it was not yet published — it was, moments later, by
+`swiftctl image publish`; see §8b below, where it boots under Cloud Hypervisor,
+and `docs/cell-image.md` for the current publishing recipe.
 
 Notes for the next bake: the local build needs the **distro** QEMU
 (`/usr/bin/qemu-system-x86_64`) — Kata's bundled build has no user-mode networking

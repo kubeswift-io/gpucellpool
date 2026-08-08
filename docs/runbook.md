@@ -199,9 +199,84 @@ They are, and deliberately: a failed read retains the previous values rather tha
 reporting zero. Check `status.workloadCapacity.lastObserved` and
 `WorkloadClusterReachable`.
 
+### `Forbidden` when a cell's Node should have been removed
+
+`WorkloadClusterReachable=False Forbidden`, or a stale Node that never gets
+reaped. The credential in `spec.workloadCluster.kubeconfigSecretRef` is
+missing `delete` on `nodes` in the workload cluster. This is not a
+drain-only right — reaping a stale Node left by a replaced cell, and removing
+a cell's own Node when the cell is deleted, are both always-on paths
+(`docs/security.md`). Reapply the current
+`config/rbac/workload-cluster-observer.yaml` (it grants
+`nodes: [get, list, watch, patch, update, delete]`) and mint a fresh token if
+the credential Secret was built from an older ClusterRole.
+
+### Replacing a cell after a cell-image change
+
+There is **no rolling update**. Changing `spec.cell.guestTemplate` (a new
+`imageRef`, a driver bump) bumps the per-cell template-hash annotation but
+does not touch existing cells (`docs/limitations.md`). To roll a driver
+change out cell by cell, for each cell in turn:
+
+```bash
+# 1. In the WORKLOAD cluster: drain the cell's inner workloads yourself.
+#    The pool will not do this for you — it only waits for allocations to
+#    clear once you cordon/drain.
+kubectl --context workload cordon <cell>
+kubectl --context workload drain <cell> --ignore-daemonsets --delete-emptydir-data
+
+# 2. Confirm the cell is actually idle before deleting it.
+kubectl -n <ns> get cellpool <name> \
+  -o jsonpath='{range .status.cells[*]}{.name} {.capacityDevices}{"\n"}{end}'
+
+# 3. Delete the cell's outer object. The pool recreates it from the CURRENT
+#    guestTemplate (SwiftGuest) or Machine (ClusterAPI) — pick the matching
+#    command.
+kubectl -n <ns> delete swiftguest <cell>          # provisioner: SwiftGuest
+kubectl -n <ns> delete machine <cell>             # provisioner: ClusterAPI
+
+# 4. Watch it come back on the new template.
+kubectl -n <ns> get cellpool <name> -w
+```
+
+The cell finalizer (`cells.kubeswift.io/cell-drain`) blocks the delete from
+actually completing until HAMi allocations clear — if step 1 was skipped, the
+delete in step 3 hangs rather than destroying running work, which is
+correct, but slower than doing the drain first.
+
+---
+
+## Metrics
+
+Twelve `gpucell_*` Prometheus series, every one labelled `{pool, namespace}`
+(`internal/metrics/metrics.go`) plus whatever the metric itself is about.
+Both layers are kept deliberately apart, so an alert can distinguish "no GPU
+left in the infrastructure cluster" from "the shared GPU is full":
+
+| Metric | Type | Extra labels | What it tells you |
+|---|---|---|---|
+| `gpucell_cells_desired` | gauge | — | what the scaling policy asked for |
+| `gpucell_cells` | gauge | `phase` | cells per phase — every phase is written every pass, so an emptied phase reads `0`, not stale |
+| `gpucell_cell_startup_seconds` | histogram | — | creation → first Ready; the number that decides whether reactive autoscaling makes sense |
+| `gpucell_cell_transitions_total` | counter | `from`, `to` | catches an oscillating cell (`Ready → AwaitingGPUCapacity → Ready`) even when its current phase looks healthy |
+| `gpucell_physical_gpus` | gauge | `state` (`held`\|`free`) | outer, whole devices |
+| `gpucell_capacity_gpu_devices` | gauge | — | inner, devices HAMi advertises across this pool's cells |
+| `gpucell_capacity_gpu_memory_bytes` | gauge | `state` (`total`\|`allocated`\|`available`) | inner, always valid (bytes are commensurable across GPU models) |
+| `gpucell_capacity_gpu_compute_percent` | gauge | `state` | inner, homogeneous pools only |
+| `gpucell_workload_cluster_reachable` | gauge | — | `1`/`0` — while `0`, every destructive path is frozen; alert on this to explain why a pool stopped changing |
+| `gpucell_capacity_scrape_errors_total` | counter | `reason` | a failed capacity read is reported `Unknown` and the last value retained — this counter is how you'd notice the data went stale, since the gauges alone will not tell you |
+| `gpucell_scale_decisions_total` | counter | `reason`, `scaled_up` | every autoscaling decision, including refusals — "did not scale, and here is why" is the interesting case |
+| `gpucell_reconcile_errors_total` | counter | — | reconciles that returned an error |
+
+A pool deleted from the cluster stops reporting — the controller drops its
+label series on teardown rather than leaving a torn-down pool's last state
+looking current forever.
+
 ---
 
 ## Networking: the thing that bites
+
+See `docs/networking.md` for the full treatment; this is the short version.
 
 A Kubernetes node must be **dialable by its own apiserver** (logs, exec,
 port-forward, metrics). Two measured consequences:
