@@ -85,6 +85,7 @@ const (
 	ReasonNodeNameCollision          = "NodeNameCollision"
 	ReasonBootstrapCredentialSuspect = "BootstrapCredentialSuspect"
 	ReasonCellReplacementExhausted   = "CellReplacementExhausted"
+	ReasonFaultNotInTheCell          = "FaultNotInTheCell"
 	ReasonWaitingForAllocations      = "WaitingForAllocations"
 	ReasonDrainTimedOut              = "DrainTimedOut"
 

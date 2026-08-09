@@ -85,7 +85,7 @@ conditions are states the operator reports deliberately rather than faults.
 |---|---|---|
 | `GPUCellPoolWorkloadClusterUnreachable` | unreachable for 10m — every destructive path is frozen meanwhile | transport |
 | `GPUCellPoolCellsNotReady` | short of Ready cells for 30m (a cell takes ~5 min, so this is stuck, not starting) | cells |
-| `GPUCellPoolCellFailed` | a Failed cell persists for 15m — replacement is not fixing it | cells |
+| `GPUCellPoolCellFailed` | a Failed cell persists for 15m — replacement is not fixing it, or the pool has stopped replacing (`Progressing=FaultNotInTheCell`) because the fault is pool-wide | cells |
 | `GPUCellPoolCellFlapping` | sustained phase churn | cells |
 | `GPUCellPoolNoFreePhysicalGPU` | the pool wants a cell **and** no device is free | outer |
 | `GPUCellPoolSharedGPUExhausted` | healthy cells whose GPU memory is entirely allocated | inner |
