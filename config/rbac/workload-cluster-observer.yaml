@@ -29,6 +29,21 @@ rules:
     resources: [nodes]
     verbs: [get, list, watch, patch, update, delete]
 
+  # Kubelet heartbeat leases — what makes the node DELETE above safe.
+  #
+  # A Node carrying a previous incarnation's identity label is not necessarily a
+  # leftover: the replacement's own kubelet adopts the object under the reused name
+  # and keeps the label it finds. The Lease is the only thing that separates the two,
+  # and deleting the wrong one is unrecoverable — a kubelet whose Node is removed
+  # under it never re-registers.
+  #
+  # Without this grant the operator falls back to the Node's Ready heartbeat, which
+  # is up to 5 minutes stale by design, and when that is missing too it declines to
+  # delete at all. Nothing breaks; phantom Nodes just linger longer.
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get]
+
   # HAMi DevicePlugin-mode accounting: allocations live on pod annotations.
   - apiGroups: [""]
     resources: [pods]

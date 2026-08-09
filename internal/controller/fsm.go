@@ -117,13 +117,16 @@ func AdvanceCell(obs Observation) Decision {
 		return expireOr(obs, phase, obs.BootstrapTimeout, cellsv1alpha1.ReasonCellProvisionTimeout, msg)
 
 	case obs.StaleNode:
-		// A Node with this cell's name but a previous incarnation's UID. Left in
-		// place it would be reported as this cell's Node — a phantom Ready cell,
-		// or capacity advertised for a GPU that no longer exists.
+		// A Node with this cell's name, a previous incarnation's UID, and NO kubelet
+		// heartbeating for it. Left in place it would be reported as this cell's
+		// Node — a phantom Ready cell, or capacity advertised for a GPU that no
+		// longer exists. A Node whose kubelet IS live is never stale, however old
+		// its identity label: that is the replacement adopting the object, and it
+		// gets re-labelled instead (see the observation site).
 		return Decision{
 			Phase:         cellsv1alpha1.CellPhaseJoining,
 			Reason:        cellsv1alpha1.ReasonNodeNameCollision,
-			Message:       "a workload Node from a previous incarnation of this cell is being removed before the replacement joins",
+			Message:       "a workload Node left by a previous incarnation of this cell (no kubelet heartbeat) is being removed before the replacement joins",
 			ReapStaleNode: true,
 		}
 

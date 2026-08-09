@@ -370,16 +370,24 @@ func (r *GPUCellPoolReconciler) discoverCells(
 		}
 
 		if reachable {
-			node, nErr := workload.GetNodeState(ctx, inner, name)
+			node, nErr := workload.GetNodeState(ctx, inner, name, obs.Now)
 			if nErr != nil {
 				return nil, fmt.Errorf("cell %s: %w", name, nErr)
 			}
 			obs.Node = node
-			obs.StaleNode = node.Exists && cellid.IsStaleNode(node.Labels, outer.UID)
+			// A foreign identity label alone does NOT make a Node stale. The
+			// replacement's own kubelet adopts the existing object and keeps the
+			// label it finds there, so a live kubelet means "adopt and re-label",
+			// and only a Node nobody is heartbeating for is a phantom to reap.
+			// Getting this wrong deletes the live cell's Node, and a kubelet whose
+			// Node is deleted under it never re-registers (#14).
+			obs.StaleNode = node.Exists && !node.KubeletLive &&
+				cellid.IsStaleNode(node.Labels, outer.UID)
 
 			if node.Exists && !obs.StaleNode {
-				// The kubelet may not have applied the identity labels itself;
-				// patching them here is the reliable path.
+				// The kubelet may not have applied the identity labels itself, and
+				// an adopted Node still carries the previous incarnation's; patching
+				// them here is the reliable path, and is what claims an adoption.
 				if _, mErr := workload.EnsureNodeMetadata(ctx, inner, name,
 					cellid.NodeLabels(pool.Name, idx, outer.UID, nodeLabels(pool)),
 					nodeAnnotations(pool), nodeTaints(pool)); mErr != nil {
@@ -423,17 +431,35 @@ func (r *GPUCellPoolReconciler) discoverCells(
 		live[c.Name] = true
 	}
 	for name, prev := range previous {
-		if live[name] || prev.Phase != cellsv1alpha1.CellPhaseFailed {
+		if live[name] {
 			continue
 		}
-		if prev.Index >= pool.Spec.Replicas {
-			continue // the pool no longer wants this slot
+		// This row has no guest. Either it becomes a tombstone, or it is dropped —
+		// and dropping it is the last moment anything remembers the cell existed.
+		keepTombstone := prev.Phase == cellsv1alpha1.CellPhaseFailed && prev.Index < pool.Spec.Replicas
+		if keepTombstone {
+			prev.GuestUID = ""
+			prev.NodeName = ""
+			prev.Devices = nil
+			prev.CapacityDevices = 0
+			out = append(out, prev)
+			continue
 		}
-		prev.GuestUID = ""
-		prev.NodeName = ""
-		prev.Devices = nil
-		prev.CapacityDevices = 0
-		out = append(out, prev)
+		// Otherwise the row is dropped, and its workload Node is left behind. That is
+		// what sets up the collision in #14 — but it is NOT cleaned up here: at the
+		// moment a row is dropped the cell's kubelet has only just died, so its lease
+		// still looks fresh and the Node is (correctly) not reapable yet. A one-shot
+		// attempt here reaps nothing and then nothing remembers the cell. The
+		// idempotent sweep in reapOrphanNodes owns this.
+	}
+	if reachable {
+		keep := make(map[string]bool, len(out))
+		for _, c := range out {
+			keep[c.Name] = true
+		}
+		if err := r.reapOrphanNodes(ctx, inner, pool, keep); err != nil {
+			return nil, err
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out, nil
@@ -441,6 +467,43 @@ func (r *GPUCellPoolReconciler) discoverCells(
 
 // cellStatus folds a decision into the cell's status row, carrying the failure
 // count and transition time forward.
+// reapOrphanNodes deletes workload Nodes that carry this pool's label but no
+// longer correspond to any of its cells, once nothing is heartbeating for them.
+//
+// It exists because a retired cell is forgotten: its status row is dropped, and at
+// that instant its kubelet has only just stopped, so the Node is not yet safe to
+// delete. Anything that tried to clean up at drop time would find a Node that still
+// looks live, skip it, and never look again — leaving the Node for the next cell at
+// that index to adopt, which is the collision in #14. So the sweep is keyed on the
+// pool LABEL and runs every reconcile: it converges instead of getting one chance.
+//
+// keep is the set of cell names the pool currently accounts for, including cells
+// mid-teardown — their Nodes belong to the drain path, not here.
+func (r *GPUCellPoolReconciler) reapOrphanNodes(
+	ctx context.Context, inner kubernetes.Interface,
+	pool *cellsv1alpha1.GPUCellPool, keep map[string]bool,
+) error {
+	nodes, err := workload.ListPoolNodes(ctx, inner, pool.Name, r.now())
+	if err != nil {
+		// A pool whose nodes cannot be listed is not a pool whose nodes should be
+		// deleted; the reachability condition already reports the transport.
+		logf.FromContext(ctx).V(1).Info("orphan node sweep skipped", "error", err.Error())
+		return nil
+	}
+	for name, node := range nodes {
+		if keep[name] || node.KubeletLive {
+			continue
+		}
+		if err := workload.DeleteNode(ctx, inner, name); err != nil {
+			return fmt.Errorf("removing orphan node %s: %w", name, err)
+		}
+		r.event(pool, corev1.EventTypeNormal, cellsv1alpha1.ReasonNodeNameCollision,
+			fmt.Sprintf("removed workload Node %s: it carries this pool's label, "+
+				"belongs to no current cell, and no kubelet is heartbeating for it", name))
+	}
+	return nil
+}
+
 func (r *GPUCellPoolReconciler) cellStatus(
 	prev cellsv1alpha1.CellStatus, pool, namespace, name string, idx int32,
 	outer provisioner.OuterState, obs Observation, dec Decision,
