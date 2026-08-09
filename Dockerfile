@@ -14,8 +14,14 @@ COPY api/ api/
 COPY internal/ internal/
 
 # CGO off and a static binary, so the image below needs no libc at all.
+# VERSION is stamped into the binary so the CRD-drift report can print a fix
+# command pointing at THIS release's manifest rather than at main. Unset in a local
+# build, which is why the default in crdcheck is "main".
+ARG VERSION=main
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -a -trimpath -ldflags="-s -w" -o manager ./cmd/manager
+    go build -a -trimpath \
+      -ldflags="-s -w -X github.com/kubeswift-io/gpucellpool/internal/crdcheck.Version=${VERSION}" \
+      -o manager ./cmd/manager
 
 # Distroless static, non-root. This operator reconciles two API servers and
 # nothing else: no shell, no package manager, no writable filesystem, and — unlike

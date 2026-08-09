@@ -25,6 +25,18 @@ Watch both layers:
 
 A cell only becomes Ready when the VM runs, its Node registers Ready, AND HAMi
 advertises the GPU. If it sits in AwaitingGPUCapacity, the message names why.
+{{- if .Release.IsUpgrade }}
+
+APPLY THE CRD. `helm upgrade` never updates a chart's crds/, and the apiserver
+then SILENTLY DROPS any field the older schema does not know -- a spec you write
+is accepted and ignored. Run:
+
+  kubectl apply -f https://raw.githubusercontent.com/kubeswift-io/gpucellpool/{{ printf "v%s" .Chart.AppVersion }}/config/crd/bases/cells.kubeswift.io_gpucellpools.yaml
+
+The manager checks this at startup and logs exactly which fields are missing, so
+`kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "gpucellpool.fullname" . }} | head` will tell you
+whether you needed it.
+{{- end }}
 {{- if not .Values.webhook.enabled }}
 
 WARNING: the validating webhook is disabled. The guestTemplate denylist is a

@@ -50,6 +50,8 @@ jobs:
         with:
           context: .
           push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ env.IMAGE }}:${{ github.ref_name }}
