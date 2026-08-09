@@ -25,7 +25,7 @@ by GPUCellPool.
 | a `DeviceClass` + `ResourceClaimTemplate` for the VFIO GPU | do not re-derive these — apply KubeSwift's own samples at `config/samples/dra-gpu/` in the KubeSwift repo (`resourceclaimtemplate-single-gpu.yaml` creates the `single-vfio-gpu` template this quickstart references) |
 | Multus + a `NetworkAttachmentDefinition` carrying a **routable** address | not optional — see `docs/networking.md`. A minimal sample is at `config/samples/network-attachment-definition.yaml` |
 | a `SwiftGuestClass` | CPU/memory/disk shape for the cell VM |
-| a cell `SwiftImage` | a disk image with the NVIDIA driver, containerd + CDI, and your distribution's node binaries baked in — see `docs/cell-image.md` to build one |
+| a cell `SwiftImage` | **we publish one**: `kubectl apply -f config/samples/swiftimage-cell.yaml`. It is a reference image (proprietary driver 580.173.02 for Pascal, k0s node binaries) — `docs/cell-image.md` says when to bake your own instead |
 
 **In the workload cluster:**
 

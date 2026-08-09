@@ -2,8 +2,31 @@
 
 A cell boots from a prebaked disk image — a GPU-capable Kubernetes worker with
 the driver, container runtime and node binaries already installed, so joining
-is thin cloud-init rather than a 5-15 minute install-at-boot. This page covers
-building one and what it must contain.
+is thin cloud-init rather than a 5-15 minute install-at-boot.
+
+## Use the published reference image
+
+You do not have to bake one to try this out. The image the project's own
+hardware validation ran on is published as a **public** OCI artifact, so this
+needs no pull secret:
+
+```bash
+kubectl apply -f config/samples/swiftimage-cell.yaml   # namespace gpu-cells
+kubectl wait swiftimage/gpu-worker-noble -n gpu-cells --for=jsonpath='{.status.phase}'=Ready --timeout=15m
+```
+
+Then reference it from your pool: `imageRef: {name: gpu-worker-noble}`.
+
+It is a reference image, not a universal one, and two things pin it:
+
+| | |
+|---|---|
+| driver **580.173.02**, the *proprietary* branch | chosen for a Pascal card (GTX 1080); the open kernel modules are Turing and newer only. On newer hardware you may want `-open` instead, which means baking your own |
+| node binaries are **k0s** | if your workload cluster is kubeadm, RKE2 or k3s, this image still has the driver and container toolkit you need but not your node binaries. Either install them from the join cloud-init (slower first boot, no rebake — see `config/samples/cell-join-secret.yaml`) or bake for your distribution |
+
+It pulls ~11 GiB and expands to a 30 GiB raw disk. Cloning that disk is most of
+a cell's startup time (~3 minutes of the measured 4m45s), so if you bake your
+own, a smaller root disk is the cheapest latency win available.
 
 ## What the image must satisfy
 

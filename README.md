@@ -92,7 +92,7 @@ privileged in the infrastructure cluster.
 |---|---|
 | infrastructure cluster | KubeSwift ≥ v0.13.4, a GPU node (`kubeswift.io/gpu-node=true`), a `DeviceClass` + `ResourceClaimTemplate` for VFIO GPUs, Multus + a NAD carrying a routable address, a `SwiftGuestClass` for the cell VM |
 | workload cluster | HAMi installed, reachable from the operator, and reachable **both ways** for kubelet (cells need a routable interface, not just egress) |
-| cell image | a `SwiftImage` with the NVIDIA driver, containerd + CDI, and your distribution's node binaries |
+| cell image | a `SwiftImage` with the NVIDIA driver, containerd + CDI, and your distribution's node binaries. A public reference image is published — see `docs/cell-image.md` |
 
 Budget **~5 minutes** for a first cell to go `Pending` → `Ready` — most of it is
 cloning the root disk, not booting. See `docs/quickstart.md`.
