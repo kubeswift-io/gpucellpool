@@ -129,6 +129,12 @@ type OuterState struct {
 	// UID is the outer object's UID — the cell's instance anchor, used to spot a
 	// workload Node left behind by a previous incarnation.
 	UID string
+
+	// TemplateHash is the cell-template hash the object was CREATED from, read back
+	// from its annotation. Comparing it with the pool's current hash is the only way
+	// to know a cell is running an older shape: the hash was being written and never
+	// read, so template drift was invisible.
+	TemplateHash string
 }
 
 // DrainFinalizerClearer is implemented by provisioners that stamp the cell-drain

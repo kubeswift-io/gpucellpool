@@ -168,7 +168,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Idleness is read from the capacity provider, not guessed: only a cell that
 	// holds nothing may be removed automatically.
 	var idle []string
-	if autoScaleDown(&pool) && reachable && provider != nil {
+	if needsIdleness(&pool) && reachable && provider != nil {
 		idle = r.idleCells(ctx, provider, cells)
 	}
 
@@ -255,6 +255,22 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
+	// A template change replaces cells only when asked to, and only through the same
+	// drain gate scale-down uses. Deliberately after the membership plan: a rollout
+	// must not race a scale decision for the index it is about to free.
+	rollout := PlanRollout(RolloutInput{
+		Policy:            pool.Spec.UpdatePolicy,
+		DesiredHash:       cellid.TemplateHash(pool.Spec.Cell.GuestTemplate.Raw),
+		Cells:             cells,
+		IdleCells:         idle,
+		WorkloadReachable: reachable,
+		AtDesiredSize:     liveCells(cells) == scale.Desired && len(plan.Create) == 0,
+	})
+	if rollout.Drain != "" {
+		r.markDraining(cells, rollout.Drain)
+		r.event(&pool, corev1.EventTypeNormal, rollout.Reason, rollout.Message)
+	}
+
 	// Draining cells: gate on allocations, then remove.
 	for i := range cells {
 		if cells[i].Phase != cellsv1alpha1.CellPhaseDraining {
@@ -265,7 +281,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 	}
 
-	r.writeStatus(ctx, &pool, cells, plan, scale, demand, demandKnown,
+	r.writeStatus(ctx, &pool, cells, plan, scale, rollout, demand, demandKnown,
 		freeGPUs, health, cap0, capacityKnown, reachable, reachReason, reachMsg)
 	if err := r.Status().Update(ctx, &pool); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
@@ -314,6 +330,20 @@ func (r *GPUCellPoolReconciler) discoverCells(
 		outer, err := prov.Ensure(ctx, r.cellRequest(pool, idx))
 		if err != nil {
 			return nil, fmt.Errorf("observing cell %s: %w", name, err)
+		}
+
+		// Cell names are REUSED: index 0 is always <pool>-0, so a replacement lands on
+		// the name of the cell it replaced. A status row for a different incarnation
+		// must not lend its phase to the new one — carrying `Draining` across made a
+		// freshly created cell inherit its predecessor's teardown and be deleted on the
+		// very pass that created it, forever, with no timeout that could ever break it.
+		// The guest UID distinguishes them, exactly as it does for a stale workload
+		// Node. The failure counter is the one thing that must survive, because the
+		// replacement backoff is counted per index, not per incarnation.
+		if prev.GuestUID != "" && outer.UID != "" && prev.GuestUID != outer.UID {
+			prev = cellsv1alpha1.CellStatus{
+				Name: prev.Name, Index: prev.Index, FailureCount: prev.FailureCount,
+			}
 		}
 
 		obs := Observation{
@@ -409,6 +439,7 @@ func (r *GPUCellPoolReconciler) cellStatus(
 		Phase:              dec.Phase,
 		Message:            dec.Message,
 		GuestUID:           outer.UID,
+		TemplateHash:       outer.TemplateHash,
 		HostNode:           outer.HostNode,
 		Devices:            outer.GPUDevices,
 		NodeReady:          obs.Node.Ready,
@@ -648,7 +679,7 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 func (r *GPUCellPoolReconciler) writeStatus(
 	ctx context.Context, pool *cellsv1alpha1.GPUCellPool,
 	cells []cellsv1alpha1.CellStatus, plan MembershipPlan,
-	scale ScaleDecision, demand capacity.Demand, demandKnown bool,
+	scale ScaleDecision, rollout RolloutDecision, demand capacity.Demand, demandKnown bool,
 	freeGPUs *int, health capacity.Health, cap0 capacity.Capacity, capacityKnown bool,
 	reachable bool, reachReason, reachMsg string,
 ) {
@@ -719,6 +750,7 @@ func (r *GPUCellPoolReconciler) writeStatus(
 		FreeGPUs:           freeGPUs,
 		CellsWaitingForGPU: waiting,
 		Membership:         plan,
+		Rollout:            rollout,
 		Progressing:        creating > 0 || draining > 0 || len(plan.Create) > 0,
 		Autoscaling:        autoscalingEnabled(pool),
 		Scale:              scale,

@@ -3,6 +3,37 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Template drift is visible.** Every cell records the template it was created
+  from, surfaced as `status.cells[].templateHash`, and a new `Updated` condition
+  compares it with the pool's current template. The hash was being written to each
+  cell and never read back, so a `spec.cell` change was invisible to the pool.
+- **`spec.updatePolicy.type: RollingUpdate`** replaces stale cells, one at a time,
+  through the same drain gate automatic scale-down uses: only cells the capacity
+  provider reports idle, never during a resize, never while another cell is coming
+  or going, never while the workload cluster is unreachable, lowest index first.
+  Opt-in, because a template edit is not consent to destroy running work — and it
+  stalls visibly (`UpdateBlocked`) rather than evicting anything. See
+  `docs/updates.md`.
+
+### Fixed
+
+- **A replacement cell inherited its predecessor's teardown.** Cell names are
+  reused (index 0 is always `<pool>-0`) and status rows are keyed by name, so a
+  freshly created cell adopted the previous incarnation's `Draining` phase and was
+  deleted on the pass that created it — create, destroy, create, destroy, with no
+  timeout that could break the loop. Rows for a different guest UID no longer lend
+  their phase; the failure counter still carries, because the replacement backoff
+  is counted per index. This affected any replacement path, not just the new
+  rolling update, and was only masked because nothing had previously refilled an
+  index whose row still said `Draining`.
+- Cell idleness was read from the capacity provider only when *automatic
+  scale-down* was enabled, so a rolling update always saw zero idle cells and
+  silently never acted.
+
 ## [v0.1.0] — 2026-08-08
 
 First release. Every capability below has been run on real hardware (one

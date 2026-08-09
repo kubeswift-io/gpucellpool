@@ -407,3 +407,33 @@ func newUnreadySlice(node, driver, device string) *resourceapi.ResourceSlice {
 }
 
 func ptrTo[T any](v T) *T { return &v }
+
+// patchPoolStatus writes the pool's status directly, to set up a state the
+// reconciler would otherwise take several passes to reach.
+func (f *testFixture) patchPoolStatus(mutate func(*cellsv1alpha1.GPUCellPool)) {
+	f.t.Helper()
+	pool := f.getPool()
+	mutate(pool)
+	if err := outerClient.Status().Update(context.Background(), pool); err != nil {
+		f.t.Fatalf("update pool status: %v", err)
+	}
+}
+
+// deleteGuest removes a cell's guest out from under the pool, clearing the drain
+// finalizer first so the delete completes.
+func (f *testFixture) deleteGuest(name string) {
+	f.t.Helper()
+	ctx := context.Background()
+	g := &unstructured.Unstructured{}
+	g.SetGroupVersionKind(provisioner.SwiftGuestGVK)
+	if err := outerClient.Get(ctx, types.NamespacedName{Namespace: f.ns, Name: name}, g); err != nil {
+		f.t.Fatalf("get guest %s: %v", name, err)
+	}
+	g.SetFinalizers(nil)
+	if err := outerClient.Update(ctx, g); err != nil {
+		f.t.Fatalf("clear finalizers on %s: %v", name, err)
+	}
+	if err := outerClient.Delete(ctx, g); err != nil {
+		f.t.Fatalf("delete guest %s: %v", name, err)
+	}
+}

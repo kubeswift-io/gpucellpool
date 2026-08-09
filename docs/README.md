@@ -10,6 +10,7 @@ Start here if you are installing or operating a pool.
 | [concepts](concepts.md) | the two-layer model — cells, the two identities, the two capacities, layered isolation |
 | [api-reference](api-reference.md) | the full `GPUCellPool` v1alpha1 spec/status, generated from the Go types and the validating webhook |
 | [autoscaling](autoscaling.md) | `spec.autoscaling` — both directions, the safety gates, the remembered cell shape |
+| [updates](updates.md) | changing `spec.cell`: seeing drift, replacing cells by hand, `updatePolicy.type: RollingUpdate` |
 | [networking](networking.md) | the routable-interface requirement, `nodeIPFrom`, NADs, DNS, `port-forward` |
 | [security](security.md) | why creating a pool is node-root-equivalent authority, the webhook, the two RBAC scopes |
 | [cell-image](cell-image.md) | building and publishing a cell image with `hack/build-cell-image.sh` |
