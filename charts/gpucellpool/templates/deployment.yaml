@@ -24,7 +24,13 @@ spec:
           type: RuntimeDefault
       containers:
         - name: manager
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- /*
+          The release workflow pushes the git tag verbatim (v0.1.0), while appVersion
+          carries no leading v (0.1.0, and the workflow asserts that). Defaulting to
+          appVersion alone therefore asked for a tag that does not exist: a default
+          install of the released chart failed with ImagePullBackOff on its own image.
+          */}}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default (printf "v%s" .Chart.AppVersion) }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --health-probe-bind-address=:8081

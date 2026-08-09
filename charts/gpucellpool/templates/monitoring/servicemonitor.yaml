@@ -31,6 +31,14 @@ spec:
     - port: metrics
       path: /metrics
       interval: {{ $sm.interval | default "30s" }}
+      # Every gpucell_* series carries pool and namespace labels describing the POOL.
+      # Prometheus overwrites exposed labels with target labels by default, so our
+      # namespace was being replaced by the operator's own namespace and ours pushed
+      # to exported_namespace — measured against a live Prometheus. Every alert then
+      # named the wrong namespace. honorLabels keeps the describing labels, which is
+      # exactly what kube-prometheus-stack does for kube-state-metrics, for exactly
+      # this reason.
+      honorLabels: true
       {{- if .Values.metrics.secure }}
       # The manager serves HTTPS with a self-signed certificate, so verification
       # is skipped. It does not authenticate scrapers — see issue #11 and the
