@@ -30,7 +30,7 @@ is privileged in the infrastructure cluster — see `docs/security.md`.
 
 ## Status
 
-**v0.1.0 — alpha.** Every capability has been run on real hardware: one physical GPU
+**v0.1.1 — alpha.** Every capability has been run on real hardware: one physical GPU
 passed into a VM, the VM joined as a worker node, HAMi shared that GPU between
 workloads, and the pool scaled up and down on demand. Both cell provisioners work —
 `SwiftGuest` directly, or a Cluster API `Machine` for a CAPI-managed workload cluster
@@ -69,16 +69,20 @@ spec:
 
 ```bash
 helm install gpucellpool oci://ghcr.io/kubeswift-io/charts/gpucellpool \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace gpucellpool-system --create-namespace
 ```
 
-`helm upgrade` never updates files in `crds/`, so after a chart upgrade that
-changes the API:
+`helm upgrade` never updates files in `crds/`, and the apiserver then **silently
+drops** any field the older schema does not know — so apply the CRD yourself after
+every upgrade:
 
 ```bash
-kubectl apply -f charts/gpucellpool/crds/
+kubectl apply -f https://raw.githubusercontent.com/kubeswift-io/gpucellpool/v0.1.1/config/crd/bases/cells.kubeswift.io_gpucellpools.yaml
 ```
+
+The operator checks this at startup and logs exactly which fields are being dropped
+if you skip it. See `docs/upgrading.md`.
 
 The validating webhook is on by default and the chart issues its own certificate
 (set `webhook.certManager.enabled=true` to use cert-manager instead). Leaving the

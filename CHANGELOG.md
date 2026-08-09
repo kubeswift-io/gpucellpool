@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.1] — 2026-08-09
 
 ### Added
 
@@ -49,6 +49,87 @@ All notable changes to this project are documented here. The format follows
 - Cell idleness was read from the capacity provider only when *automatic
   scale-down* was enabled, so a rolling update always saw zero idle cells and
   silently never acted.
+
+Everything below was found by installing the **released v0.1.0 chart** on a cluster
+and driving a real pool through it, rather than by reading manifests. None of it
+could fail a test suite that runs with admin credentials against rendered objects.
+
+- **A default chart install could not create a cell.** The operator renders a
+  per-cell bootstrap Secret from the user's join template, and the RBAC marker
+  granted `secrets: get;list;watch`. Every pool failed on its first cell with
+  `secrets is forbidden`, visible only in the manager log.
+- **Every event the operator emitted was rejected.** The recorder writes through
+  `events.k8s.io`, which nothing granted, so `kubectl describe gpucellpool` showed
+  no events at all.
+- **A default install pulled an image tag that was never published.** `appVersion`
+  carries no leading `v` while the release workflow pushes the git tag verbatim, so
+  the chart's default resolved to `0.1.0` against a published `v0.1.0`.
+- **Alerts would have named the operator's namespace, not the pool's.** Without
+  `honorLabels`, Prometheus overwrote the metrics' own `namespace` label, landing it
+  as `exported_namespace`.
+- **A cell was reaped as stale while its own kubelet was using it.** A replacement's
+  kubelet registers under the reused node name and adopts the existing Node object,
+  keeping the identity label it finds there — so a live cell was indistinguishable
+  from a leftover, and deleting it is unrecoverable: a kubelet whose Node is removed
+  under it never re-registers, and the cell waits in `Joining` forever. The reap now
+  requires that nothing is heartbeating for the Node (its kubelet Lease, falling back
+  to the Ready condition's heartbeat, and finally declining to delete when neither
+  can be read — an unknown must never authorise a delete). Orphan cleanup became an
+  idempotent sweep keyed on the pool label, because the moment a retired cell's row
+  is dropped its kubelet has only just died and the Node still looks live: measured,
+  a one-shot attempt there reaped nothing and left the Node for the next cell at that
+  index to adopt. Needs `coordination.k8s.io/leases: [get]` in the workload cluster;
+  without it the check degrades rather than fails.
+- **Cells were rebuilt against faults that were not in the cell.** A cell whose Node
+  joined and never advertised a GPU was replaced up to five times per index — a GPU
+  allocation, a root-disk clone, a boot and a join each time — even when *no* cell
+  node anywhere advertised one, which means the fault is HAMi, its tolerations or the
+  workload cluster's network and a fresh VM will fail identically. The pool now stalls
+  with `Progressing=False/FaultNotInTheCell` and leaves the VM up to be inspected. A
+  single failing cell among healthy ones is still replaced, and with no cells at all
+  the provider is usable by definition, so a pool cannot wedge itself out of ever
+  creating one.
+- **An upgraded cluster would have run this release's new fields into the void.**
+  `helm upgrade` never updates a chart's `crds/`, and the apiserver silently drops
+  what the older schema lacks — so on an upgraded release `updatePolicy.type:
+  RollingUpdate` would have been accepted and discarded, and template drift would have
+  read as up-to-date forever. The manager now embeds the CRD it was built against,
+  compares it with the served schema at startup, and names the exact fields being
+  dropped plus the command to fix them. The `installCRDs` value is **removed**: it was
+  referenced by nothing, so setting it `false` silently did nothing. See
+  `docs/upgrading.md` — new, and worth reading before upgrading.
+
+### Known gaps
+
+- A pool that **was** working and whose join credential later expires still rebuilds
+  each cell up to five times per index. The two guards this release ships do not
+  reach it — the pool has been Ready, and the Node never registers — and unlike the
+  capacity case there is no authoritative signal to gate on, so it is tracked
+  (issue #17) rather than guessed at. `docs/limitations.md`.
+- The metrics endpoint is HTTPS with a self-signed certificate and **no
+  authorization**. Restrict it with a NetworkPolicy; adding the authn/authz filter
+  pulls `k8s.io/apiserver` into a deliberately small dependency tree (issue #11).
+- Everything listed under v0.1.0's known gaps still applies except the rolling
+  update, which shipped here.
+
+### Upgrading from v0.1.0
+
+Apply the CRD after `helm upgrade`. This release adds `spec.updatePolicy` and
+`status.cells[].templateHash`, and Helm will not update them for you:
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/kubeswift-io/gpucellpool/v0.1.1/config/crd/bases/cells.kubeswift.io_gpucellpools.yaml
+```
+
+Skip it and rolling update is accepted-and-ignored. The manager logs the missing
+fields at startup, so `kubectl -n gpucellpool-system logs deploy/gpucellpool | grep 'CRD schema'`
+tells you whether you needed it.
+
+Two RBAC additions are picked up by the chart automatically, but a credential built
+from an older `workload-cluster-observer.yaml` should be refreshed:
+`coordination.k8s.io/leases: [get]` in the **workload** cluster, and
+`apiextensions.k8s.io/customresourcedefinitions: [get]` in the infrastructure one.
+Both degrade rather than break when absent.
 
 ## [v0.1.0] — 2026-08-08
 

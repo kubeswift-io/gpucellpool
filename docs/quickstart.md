@@ -43,7 +43,7 @@ In the **infrastructure** cluster:
 
 ```bash
 helm install gpucellpool oci://ghcr.io/kubeswift-io/charts/gpucellpool \
-  --version 0.1.0 \
+  --version 0.1.1 \
   --namespace gpucellpool-system --create-namespace
 ```
 

@@ -41,6 +41,16 @@ errored about a provider the user never actually selected. If your bootstrap
 token expires, new cells fail at `Joining` with `JoinTimeout`
 (`docs/runbook.md` has the diagnostic).
 
+An expired credential is also the one futile-rebuild case still unguarded. A pool
+that has **never** worked stops creating after three failures, and a cell that
+joins and never advertises a GPU is not rebuilt when nothing advertises one
+pool-wide (`FaultNotInTheCell`). Neither covers a pool that *was* working and
+whose token then expires: the Node never registers, so each new cell is rebuilt up
+to five times per index before the index gives up. Unlike the capacity case there
+is no authoritative signal — the operator cannot validate a distribution-specific
+token without trying it — so the fix is a heuristic on consecutive join timeouts
+and is tracked in issue #17 rather than guessed at.
+
 ## Pools of two or more cells: harness-only
 
 Tracked as [#5](https://github.com/kubeswift-io/gpucellpool/issues/5).
