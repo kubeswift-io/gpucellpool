@@ -234,6 +234,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		WorkloadReachable: reachable,
 		EverReady:         everReady(&pool, cells),
 		DrainPreference:   scale.DrainCandidates,
+		ProviderUsable:    health.Ready,
 	})
 
 	for _, idx := range plan.Create {
@@ -260,7 +261,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	// Replace failed cells whose backoff has expired: delete the guest and let
 	// the next pass recreate the index.
 	for i := range cells {
-		if ShouldReplace(cells[i], r.now()) {
+		if ShouldReplace(cells[i], r.now(), health.Ready) {
 			if err := r.deleteCell(ctx, &pool, prov, cells[i], false); err != nil {
 				return ctrl.Result{}, err
 			}

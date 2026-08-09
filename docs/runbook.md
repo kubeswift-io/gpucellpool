@@ -107,6 +107,19 @@ swiftctl ssh <cell> -n <ns> -- 'nvidia-smi -L; cat /run/gpu-cell-preflight'
 Do **not** expect the pool to call the cell Ready meanwhile. A running VM whose GPU
 never surfaced is exactly the failure this design refuses to paper over.
 
+After `spec.capacity.readyTimeout` the cell goes `Failed`. What happens next depends
+on whether the fault is the cell's:
+
+- **One cell advertises nothing, others advertise fine** → the cell is replaced,
+  with backoff, up to five attempts per index (`CellReplacementExhausted`).
+- **No cell node advertises anything** → the pool **stops** and reports
+  `Progressing=False/FaultNotInTheCell`. Causes 2–4 above are workload-cluster
+  faults, so a rebuilt VM would fail identically — rebuilding would just cost a GPU
+  allocation, a root-disk clone, a boot and a join per attempt, and destroy the
+  evidence. The failed cell's VM is left up for you to inspect. Fix the provider
+  (`CapacityProviderReady` names the cause) and the cell is replaced on the next
+  pass.
+
 ### `allocatable nvidia.com/gpu` says 10 and I have one GPU
 
 That is HAMi's `deviceSplitCount` inflation, not a bug and not a device count. The

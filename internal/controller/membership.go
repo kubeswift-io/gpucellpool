@@ -64,6 +64,12 @@ type MembershipInput struct {
 	// burst of failures" from "this pool has never worked".
 	EverReady bool
 
+	// ProviderUsable is the pool-wide capacity verdict: false means no cell node
+	// anywhere advertises a GPU, which makes a cell rebuild pointless. It is also
+	// false while the workload cluster is unreachable — where not acting is the
+	// rule, not an accident.
+	ProviderUsable bool
+
 	// DrainPreference is an ordered list of cell names to remove first when
 	// shrinking. The autoscaler sets it to IDLE cells only; empty falls back to
 	// highest-index-first, which is right for an operator-driven scale-down where
@@ -181,6 +187,15 @@ func PlanMembership(in MembershipInput) MembershipPlan {
 	// Replacement: a failed index is retired from the live set, so the create
 	// path below refills it — but only once its backoff has expired.
 	for _, c := range failed {
+		if RebuildWouldNotHelp(c, in.ProviderUsable) {
+			plan.Stalled = true
+			plan.Reason = cellsv1alpha1.ReasonFaultNotInTheCell
+			plan.Message = "not replacing cell " + c.Name +
+				": its Node joined and advertises no GPU, and no cell node advertises one — " +
+				"the fault is in the workload cluster, so a rebuilt VM would fail the same way. " +
+				"Fix the capacity provider (see CapacityProviderReady) and the cell is replaced then"
+			return plan
+		}
 		if c.FailureCount >= MaxFailuresPerIndex {
 			plan.Stalled = true
 			plan.Reason = cellsv1alpha1.ReasonCellReplacementExhausted
@@ -255,17 +270,43 @@ func PlanMembership(in MembershipInput) MembershipPlan {
 
 // ShouldReplace reports whether a failed cell's backoff has expired, so the
 // reconciler can delete it and let the next pass recreate the index.
-func ShouldReplace(c cellsv1alpha1.CellStatus, now time.Time) bool {
+//
+// providerUsable is the pool-wide capacity verdict: false means NO cell node
+// anywhere advertises a GPU. See RebuildWouldNotHelp for why that vetoes a
+// replacement.
+func ShouldReplace(c cellsv1alpha1.CellStatus, now time.Time, providerUsable bool) bool {
 	if c.Phase != cellsv1alpha1.CellPhaseFailed {
 		return false
 	}
 	if c.FailureCount >= MaxFailuresPerIndex {
 		return false
 	}
+	if RebuildWouldNotHelp(c, providerUsable) {
+		return false
+	}
 	if c.LastTransitionTime == nil {
 		return true
 	}
 	return now.Sub(c.LastTransitionTime.Time) >= Backoff(c.FailureCount)
+}
+
+// RebuildWouldNotHelp reports whether replacing a failed cell cannot possibly fix
+// it, because the fault is not in the cell.
+//
+// The shape: the cell's Node joined and went Ready, it advertises no GPU, and no
+// cell node ANYWHERE advertises one either. That is a workload-cluster fault — HAMi
+// missing, its DaemonSet not tolerating the pool's taints, a broken inner CNI — and
+// a fresh VM will reach exactly the same place. Rebuilding costs a GPU allocation, a
+// full root-disk clone, a boot and a join per attempt, up to MaxFailuresPerIndex per
+// index, and destroys the evidence each time. Observed on hardware: HAMi could not
+// register, and the pool's answer was to rebuild the VM.
+//
+// A single broken cell in an otherwise healthy pool is NOT this: the provider
+// reports usable as soon as any node advertises a device, so that cell is still
+// replaced. And with no cells at all the provider is usable by definition, so a pool
+// can never wedge itself out of ever creating one.
+func RebuildWouldNotHelp(c cellsv1alpha1.CellStatus, providerUsable bool) bool {
+	return !providerUsable && c.NodeReady && c.CapacityDevices == 0
 }
 
 func minDuration(a, b time.Duration) time.Duration {

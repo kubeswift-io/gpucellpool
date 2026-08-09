@@ -60,7 +60,11 @@ spec:
             description: >-
               A failed cell is replaced behind a backoff, so this firing repeatedly
               means replacement is not fixing it — usually a bad image, an expired
-              join credential, or a GPU that never surfaces in the guest.
+              join credential, or a GPU that never surfaces in the guest. If it stays
+              Failed with no replacement attempts at all, check Progressing: on
+              FaultNotInTheCell the pool has deliberately stopped rebuilding because
+              nothing advertises a GPU pool-wide, and the fault is in the workload
+              cluster.
             runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
 
         - alert: GPUCellPoolCellFlapping

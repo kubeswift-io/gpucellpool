@@ -185,19 +185,59 @@ func TestBackoffGrowsAndCaps(t *testing.T) {
 func TestShouldReplaceHonoursBackoff(t *testing.T) {
 	failedAt := metav1.Time{Time: now.Add(-10 * time.Second)}
 	c := cellsv1alpha1.CellStatus{Phase: cellsv1alpha1.CellPhaseFailed, FailureCount: 1, LastTransitionTime: &failedAt}
-	if ShouldReplace(c, now) {
+	if ShouldReplace(c, now, true) {
 		t.Error("replaced before the 30s backoff expired")
 	}
 	c.LastTransitionTime = &metav1.Time{Time: now.Add(-31 * time.Second)}
-	if !ShouldReplace(c, now) {
+	if !ShouldReplace(c, now, true) {
 		t.Error("did not replace after the backoff expired")
 	}
 	c.FailureCount = MaxFailuresPerIndex
-	if ShouldReplace(c, now) {
+	if ShouldReplace(c, now, true) {
 		t.Error("replaced an exhausted index")
 	}
-	if ShouldReplace(cellsv1alpha1.CellStatus{Phase: cellsv1alpha1.CellPhaseReady}, now) {
+	if ShouldReplace(cellsv1alpha1.CellStatus{Phase: cellsv1alpha1.CellPhaseReady}, now, true) {
 		t.Error("replaced a healthy cell")
+	}
+}
+
+// TestShouldNotRebuildAgainstAPoolWideFault: a cell whose Node joined and
+// advertises nothing, in a pool where nothing advertises anything, is not a broken
+// cell — it is a broken workload cluster. Rebuilding it costs a GPU allocation, a
+// full root-disk clone, a boot and a join per attempt and cannot succeed. Measured
+// on hardware: HAMi could not register and the pool's answer was to rebuild the VM.
+func TestShouldNotRebuildAgainstAPoolWideFault(t *testing.T) {
+	failedAt := metav1.Time{Time: now.Add(-10 * time.Minute)}
+	joined := cellsv1alpha1.CellStatus{
+		Name: "cells-0", Phase: cellsv1alpha1.CellPhaseFailed, FailureCount: 1,
+		LastTransitionTime: &failedAt, NodeReady: true, CapacityDevices: 0,
+	}
+
+	if ShouldReplace(joined, now, false) {
+		t.Error("rebuilt a cell against a pool-wide provider fault")
+	}
+	if !ShouldReplace(joined, now, true) {
+		t.Error("a single cell advertising nothing in an otherwise healthy pool must still be replaced")
+	}
+
+	// A cell that never joined tells us nothing about the provider, so the veto
+	// must not catch it — that failure really may be the cell's.
+	neverJoined := joined
+	neverJoined.NodeReady = false
+	if !ShouldReplace(neverJoined, now, false) {
+		t.Error("a cell that never joined was not replaced; its fault is not the provider's")
+	}
+
+	// And the stall is reported, not silent.
+	plan := PlanMembership(MembershipInput{
+		Desired: 1, Cells: []cellsv1alpha1.CellStatus{joined}, Now: now,
+		WorkloadReachable: true, EverReady: true, ProviderUsable: false,
+	})
+	if !plan.Stalled || plan.Reason != cellsv1alpha1.ReasonFaultNotInTheCell {
+		t.Errorf("plan = %+v, want a stall naming the pool-wide fault", plan)
+	}
+	if len(plan.Create) != 0 || len(plan.Drain) != 0 {
+		t.Errorf("plan acted on a fault it cannot fix: %+v", plan)
 	}
 }
 
