@@ -76,6 +76,10 @@ type GPUCellPoolReconciler struct {
 // describe gpucellpool`. The core grant stays for clients that still read there.
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+// Read-only, and only its own CRD: the manager compares the served schema with the
+// one it was built against at startup, because helm upgrade never updates a chart's
+// crds/ and the apiserver then drops the new fields without a word (internal/crdcheck).
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get
 
 // Reconcile implements the loop in docs/design/gpucellpool-reconciliation.md §4.
 func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

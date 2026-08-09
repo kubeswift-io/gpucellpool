@@ -69,10 +69,11 @@ monitoring:
     enabled: true
     additionalLabels: {}
 
-# Install the CRDs. Note that `helm upgrade` never updates files in crds/, so a
-# CRD change needs `kubectl apply -f charts/gpucellpool/crds/` — the same caveat
-# KubeSwift has.
-installCRDs: true
+# There is deliberately no installCRDs toggle. The CRD ships in crds/, which Helm
+# installs unconditionally and never updates, so a flag claiming to control it
+# would be a no-op — as one here silently was. Upgrades therefore need the CRD
+# applied by hand; NOTES.txt prints the command, docs/upgrading.md explains why,
+# and the manager logs the specific fields being dropped if it is skipped.
 
 podAnnotations: {}
 podLabels: {}

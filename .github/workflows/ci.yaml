@@ -100,6 +100,12 @@ jobs:
       - name: CRD copy in the chart matches config/
         run: diff -u config/crd/bases/cells.kubeswift.io_gpucellpools.yaml charts/gpucellpool/crds/cells.kubeswift.io_gpucellpools.yaml
 
+      # The manager embeds the same CRD to detect a cluster serving an older schema.
+      # A stale embed would make it compare against the wrong baseline and report
+      # either nothing or a phantom drift.
+      - name: CRD copy embedded in the manager matches config/
+        run: diff -u config/crd/bases/cells.kubeswift.io_gpucellpools.yaml internal/crdcheck/crd/cells.kubeswift.io_gpucellpools.yaml
+
   image:
     name: Image builds
     runs-on: ubuntu-latest

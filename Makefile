@@ -40,6 +40,11 @@ manifests: controller-gen ## Generate CRDs and RBAC into config/, and sync the c
 	# kubebuilder markers and the chart's hand-written copy drifted independently —
 	# and the chart silently lacked the Cluster API rules it needed.
 	sed -n '/^rules:/,$$p' config/rbac/role.yaml | tail -n +2 > charts/gpucellpool/rules.yaml
+	# And a third copy, embedded INTO the binary: it is what lets the manager notice
+	# at startup that the cluster is serving an older schema than it was built
+	# against — the failure mode is otherwise silent, because the apiserver just
+	# drops the fields it does not know.
+	cp config/crd/bases/*.yaml internal/crdcheck/crd/
 	$(MAKE) dashboards-sync
 
 .PHONY: dashboards-sync
