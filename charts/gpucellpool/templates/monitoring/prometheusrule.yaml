@@ -1,0 +1,141 @@
+{{- $mon := .Values.monitoring | default dict }}
+{{- $pr := $mon.prometheusRule | default dict }}
+{{- if and $mon.enabled (ternary $pr.enabled true (hasKey $pr "enabled")) }}
+# A starter alert pack. Warning-biased on purpose: almost nothing here means "wake
+# someone", and several conditions are states this operator reports deliberately
+# rather than faults (a saturated shared GPU, a pool holding no cells).
+#
+# The two layers are kept apart, which is the whole reason these metrics are shaped
+# the way they are: "no GPU left in the infrastructure cluster" and "the shared GPU
+# inside the cells is full" are different problems with different remedies, and an
+# alert that merged them would be useless.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+    {{- with $pr.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: gpucellpool.transport
+      rules:
+        - alert: GPUCellPoolWorkloadClusterUnreachable
+          expr: gpucell_workload_cluster_reachable == 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "Pool {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} cannot reach its workload cluster"
+            description: >-
+              Nothing below this is trustworthy while it lasts, and every destructive
+              path is frozen by design: no cell is removed, replaced or scaled down
+              when it cannot be known whether it holds work. Capacity figures are the
+              last known values, not current ones. Check the kubeconfig Secret and the
+              network path from the operator to the workload apiserver.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+    - name: gpucellpool.cells
+      rules:
+        - alert: GPUCellPoolCellsNotReady
+          expr: (gpucell_cells_desired - sum by (pool, namespace) (gpucell_cells{phase="Ready"})) > 0
+          for: 30m
+          labels: {severity: warning}
+          annotations:
+            summary: "Pool {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} is short of Ready cells"
+            description: >-
+              A cell takes about five minutes to become Ready, so thirty minutes short
+              means it is stuck rather than starting. status.cells[].phase names the
+              layer: AllocatingGPU is the infrastructure cluster, Joining is the
+              bootstrap, AwaitingGPUCapacity is HAMi not advertising the device.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+        - alert: GPUCellPoolCellFailed
+          expr: gpucell_cells{phase="Failed"} > 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Pool {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} has a Failed cell"
+            description: >-
+              A failed cell is replaced behind a backoff, so this firing repeatedly
+              means replacement is not fixing it — usually a bad image, an expired
+              join credential, or a GPU that never surfaces in the guest.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+        - alert: GPUCellPoolCellFlapping
+          expr: sum by (pool, namespace) (rate(gpucell_cell_transitions_total[30m])) > 0.01
+          for: 30m
+          labels: {severity: warning}
+          annotations:
+            summary: "Cells in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} are churning"
+            description: >-
+              Roughly a phase change every 100 seconds, sustained. An oscillating cell
+              looks healthy at any single instant, which is exactly why this is measured
+              as a rate rather than read off a gauge.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+    - name: gpucellpool.physical
+      rules:
+        # The OUTER layer: whole devices in the infrastructure cluster.
+        - alert: GPUCellPoolNoFreePhysicalGPU
+          expr: |
+            gpucell_physical_gpus{state="free"} == 0
+            and on (pool, namespace)
+            (gpucell_cells_desired - sum by (pool, namespace) (gpucell_cells{phase="Ready"})) > 0
+          for: 20m
+          labels: {severity: warning}
+          annotations:
+            summary: "Pool {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} wants a cell and the cluster has no free GPU"
+            description: >-
+              The pool is not broken — the infrastructure cluster is full. It
+              deliberately does not queue guests that could never be scheduled. Free a
+              device, add a GPU node, or lower the pool's size. Note the `and on` here:
+              a saturated cluster whose pools are all satisfied is not worth an alert.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+    - name: gpucellpool.workload
+      rules:
+        # The INNER layer: fractions of the GPUs inside the cells. Distinct from the
+        # alert above, and the reason both exist.
+        - alert: GPUCellPoolSharedGPUExhausted
+          expr: |
+            gpucell_capacity_gpu_memory_bytes{state="available"} == 0
+            and on (pool, namespace) gpucell_capacity_gpu_devices > 0
+          for: 30m
+          labels: {severity: warning}
+          annotations:
+            summary: "Every GPU in {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} is fully allocated"
+            description: >-
+              The cells are healthy; their GPU memory is entirely handed out to HAMi
+              workloads, so the next pod requesting GPU memory will not schedule. This
+              is the inner layer — free memory by removing workloads, or add a cell.
+              Enabling spec.autoscaling lets pending demand add one for you.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/autoscaling.md
+
+        - alert: GPUCellPoolCapacityStale
+          expr: sum by (pool, namespace) (rate(gpucell_capacity_scrape_errors_total[15m])) > 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Capacity for {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}} is stale"
+            description: >-
+              Reads of the workload cluster are failing, so every capacity figure is
+              the last known value rather than a current one — deliberately, because
+              reporting zero from a failed read would be the worst possible lie. Treat
+              the numbers on the dashboards as untrustworthy until this clears.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
+    - name: gpucellpool.operator
+      rules:
+        - alert: GPUCellPoolReconcileErrors
+          expr: sum by (pool, namespace) (rate(gpucell_reconcile_errors_total[15m])) > 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: "Reconcile errors for {{`{{ $labels.namespace }}`}}/{{`{{ $labels.pool }}`}}"
+            description: >-
+              The operator is erroring rather than reporting state. Check the manager
+              logs; a persistent error usually means RBAC in one of the two clusters.
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+{{- end }}

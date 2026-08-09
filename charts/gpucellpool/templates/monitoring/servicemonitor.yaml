@@ -1,0 +1,42 @@
+{{- /*
+Nil-safe access: with `helm upgrade --reuse-values --set monitoring.enabled=true`
+the monitoring subtree from values.yaml is NOT merged, so every nested key may be
+absent. `ternary ... (hasKey ...)` keeps an explicit `enabled: false` working,
+where sprig's `default` would swallow the false.
+*/ -}}
+{{- $mon := .Values.monitoring | default dict }}
+{{- $sm := $mon.serviceMonitor | default dict }}
+{{- if and $mon.enabled (ternary $sm.enabled true (hasKey $sm "enabled")) }}
+# Scrapes the manager's /metrics endpoint (the gpucell_* series plus
+# controller-runtime's reconcile and workqueue metrics). Needs the Prometheus
+# Operator CRDs; the monitoring.enabled gate keeps a default install free of
+# that dependency.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+    {{- with $sm.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels: {{- include "gpucellpool.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: metrics
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: {{ $sm.interval | default "30s" }}
+      {{- if .Values.metrics.secure }}
+      # The manager serves HTTPS with a self-signed certificate, so verification
+      # is skipped. It does not authenticate scrapers — see issue #11 and the
+      # metrics.secure comment in values.yaml.
+      scheme: https
+      tlsConfig:
+        insecureSkipVerify: true
+      {{- end }}
+{{- end }}

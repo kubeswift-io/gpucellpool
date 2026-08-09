@@ -1,0 +1,20 @@
+{{- if ne (.Values.metrics.bindAddress | toString) "0" }}
+# A Service in front of the metrics port. Separate from the webhook Service on
+# purpose: a ServiceMonitor selects by Service, and mixing the two would scrape
+# the webhook port on every pod that serves it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "gpucellpool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector: {{- include "gpucellpool.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: metrics
+      port: {{ include "gpucellpool.metricsPort" . }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}

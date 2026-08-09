@@ -16,6 +16,7 @@ Start here if you are installing or operating a pool.
 | [cell-image](cell-image.md) | building and publishing a cell image with `hack/build-cell-image.sh` |
 | [clusterapi-cells](clusterapi-cells.md) | `provisioner: ClusterAPI` — cells as Cluster API Machines |
 | [limitations](limitations.md) | what is not implemented, not validated on hardware, or deliberately manual |
+| [observability](observability.md) | the twelve `gpucell_*` metrics, the dashboard, and the alert pack |
 | [runbook](runbook.md) | what to check when a pool is not doing what you expect |
 
 `config/samples/` has ready-to-apply manifests: a `SwiftGuest`-provisioned pool,

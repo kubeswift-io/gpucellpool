@@ -1,0 +1,505 @@
+{
+  "title": "GPUCellPool \u2014 overview",
+  "uid": "gpucellpool-overview",
+  "tags": [
+    "gpucellpool",
+    "kubeswift",
+    "hami",
+    "gpu"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "description": "GPUCellPool composes KubeSwift VM isolation with HAMi GPU sharing. The two capacity rows are deliberately never merged: physical GPUs are whole PCI devices in the infrastructure cluster, shared capacity is memory and compute fractions inside the cells' own cluster. No HAMi fraction is ever translated into a physical allocation.",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "label": "Data source"
+      },
+      {
+        "name": "namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "label": "Namespace",
+        "query": "label_values(gpucell_cells_desired, namespace)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "pool",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "label": "Pool",
+        "query": "label_values(gpucell_cells_desired{namespace=~\"$namespace\"}, pool)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "Pool health",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 2,
+      "title": "Cells by phase",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (phase) (gpucell_cells{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Ready is the three-way AND: the VM running, the Node registered, AND the expected GPU advertised. A cell sitting in AwaitingGPUCapacity is the failure this operator exists to make visible \u2014 a booted VM whose GPU never surfaced."
+    },
+    {
+      "type": "timeseries",
+      "id": 3,
+      "title": "Desired vs Ready",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(gpucell_cells_desired{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "desired"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(gpucell_cells{pool=~\"$pool\", namespace=~\"$namespace\", phase=\"Ready\"})",
+          "legendFormat": "ready"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Desired follows spec.replicas, or status.desiredReplicas when autoscaling is on."
+    },
+    {
+      "type": "stat",
+      "id": 4,
+      "title": "Workload cluster reachable",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min(gpucell_workload_cluster_reachable{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "reachable"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "0 freezes every destructive path: nothing is removed, replaced or scaled down while it is unknown whether a cell holds work. Capacity below is then the last known value, not a current one.",
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 5,
+      "title": "Physical GPUs \u2014 the infrastructure cluster (whole devices)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Whole GPUs by state",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (state) (gpucell_physical_gpus{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "held = passed through to this pool's cells. free = unallocated in the infrastructure cluster. This is the OUTER layer: whole PCI devices, nothing to do with the fractions HAMi hands out inside them."
+    },
+    {
+      "type": "timeseries",
+      "id": 7,
+      "title": "Cell startup (p50 / p90)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(gpucell_cell_startup_seconds_bucket{pool=~\"$pool\", namespace=~\"$namespace\"}[6h])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9, sum by (le) (rate(gpucell_cell_startup_seconds_bucket{pool=~\"$pool\", namespace=~\"$namespace\"}[6h])))",
+          "legendFormat": "p90"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "description": "Creation to first Ready. Measured at 4m45s from a baked image, about three minutes of which is cloning the root disk. This number decides whether autoscaling can be reactive at all."
+    },
+    {
+      "type": "row",
+      "id": 8,
+      "title": "Shared GPU capacity \u2014 the workload cluster (HAMi fractions)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "GPU memory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (state) (gpucell_capacity_gpu_memory_bytes{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "description": "Always valid: bytes are comparable across GPU models. available == 0 with healthy cells means the shared GPU is full \u2014 a different problem from having no free physical device."
+    },
+    {
+      "type": "timeseries",
+      "id": 10,
+      "title": "GPU compute (homogeneous pools only)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 8,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (state) (gpucell_capacity_gpu_compute_percent{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "{{state}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "description": "Percent OF A DEVICE, so it is only published while every advertised GPU is the same model: 100 of a GTX 1080 and 100 of an H200 are not 200 of anything. A heterogeneous pool leaves this empty on purpose."
+    },
+    {
+      "type": "stat",
+      "id": 11,
+      "title": "Devices advertised",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 16,
+        "y": 17
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(gpucell_capacity_gpu_devices{pool=~\"$pool\", namespace=~\"$namespace\"})",
+          "legendFormat": "devices"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "From HAMi's node registration annotation, NOT from nvidia.com/gpu allocatable \u2014 HAMi inflates that by deviceSplitCount (default 10), so allocatable is not a device count.",
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 12,
+      "title": "Decisions and reliability",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "Scaling decisions by reason",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (increase(gpucell_scale_decisions_total{pool=~\"$pool\", namespace=~\"$namespace\"}[1h]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Records REFUSALS as well as actions, which is the point: AtMaxReplicas, NoIdleCell, DemandUnsatisfiable and CellShapeUnknown each mean a different thing and call for a different response. See docs/autoscaling.md."
+    },
+    {
+      "type": "timeseries",
+      "id": 14,
+      "title": "Cell phase transitions",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 12,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (from, to) (increase(gpucell_cell_transitions_total{pool=~\"$pool\", namespace=~\"$namespace\"}[1h]))",
+          "legendFormat": "{{from}} \u2192 {{to}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "Churn is invisible in a phase gauge: an oscillating cell looks healthy at every instant."
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "Errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 25
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (reason) (rate(gpucell_capacity_scrape_errors_total{pool=~\"$pool\", namespace=~\"$namespace\"}[15m]))",
+          "legendFormat": "scrape: {{reason}}"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(gpucell_reconcile_errors_total{pool=~\"$pool\", namespace=~\"$namespace\"}[15m]))",
+          "legendFormat": "reconcile"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "description": "A non-zero scrape rate means every capacity figure above is stale \u2014 a failed read retains the previous values rather than reporting zero."
+    }
+  ]
+}

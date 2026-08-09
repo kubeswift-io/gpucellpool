@@ -51,3 +51,12 @@ tls.key: {{ $cert.Key | b64enc }}
 ca.crt: {{ $ca.Cert | b64enc }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+The metrics port, taken from metrics.bindAddress (":8443" -> "8443"). Derived
+rather than configured twice, so the Service, the container port and the
+ServiceMonitor cannot disagree with what the manager is actually listening on.
+*/}}
+{{- define "gpucellpool.metricsPort" -}}
+{{- regexReplaceAll ".*:" (.Values.metrics.bindAddress | toString) "" -}}
+{{- end -}}
