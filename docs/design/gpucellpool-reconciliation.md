@@ -291,6 +291,17 @@ Every verb has a named consumer:
   # unconditionally need it: reaping a stale Node left by a replaced cell
   # (§3, §8), and removing a cell's Node when the cell itself is deleted.
   # Without it every teardown fails Forbidden and stale Nodes accumulate.
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get]
+  # What makes the node DELETE above SAFE. A Node carrying a previous
+  # incarnation's identity label may simply be the same object after the
+  # replacement's kubelet adopted it — a kubelet keeps labels it did not set —
+  # and the Lease is the only signal that separates "leftover" from "live".
+  # Deleting a live one is unrecoverable: the kubelet does not re-register.
+  # Optional in the sense that its absence degrades rather than breaks: the
+  # operator falls back to the Ready condition's heartbeat (up to 5 min stale),
+  # and if that is missing too it declines to delete.
 - apiGroups: [""]
   resources: [pods]
   verbs: [get, list, watch]                      # HAMi DevicePlugin accounting

@@ -5,14 +5,18 @@ import (
 	"errors"
 	"net"
 	"testing"
+	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
+	k8stesting "k8s.io/client-go/testing"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 )
@@ -115,6 +119,19 @@ func TestClassifyErrorDistinguishesTheThreeTickets(t *testing.T) {
 	}
 }
 
+// testNow is a fixed clock: liveness is a time comparison, and a test that read
+// the wall clock would be the kind of test that passes at 3pm and fails at 3am.
+var testNow = time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+// nodeLease builds a kubelet heartbeat lease renewed at now-age.
+func nodeLease(name string, age time.Duration) *coordinationv1.Lease {
+	renew := metav1.NewMicroTime(testNow.Add(-age))
+	return &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeLeaseNamespace},
+		Spec:       coordinationv1.LeaseSpec{RenewTime: &renew},
+	}
+}
+
 func readyNode(name string, labels map[string]string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
@@ -128,14 +145,14 @@ func TestGetNodeState(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("missing node is not an error", func(t *testing.T) {
-		st, err := GetNodeState(ctx, fake.NewSimpleClientset(), "cell-0")
+		st, err := GetNodeState(ctx, fake.NewSimpleClientset(), "cell-0", testNow)
 		if err != nil || st.Exists {
 			t.Errorf("got %+v/%v — a cell that has not joined yet is not a failure", st, err)
 		}
 	})
 
 	t.Run("ready", func(t *testing.T) {
-		st, err := GetNodeState(ctx, fake.NewSimpleClientset(readyNode("cell-0", map[string]string{"gpu": "on"})), "cell-0")
+		st, err := GetNodeState(ctx, fake.NewSimpleClientset(readyNode("cell-0", map[string]string{"gpu": "on"})), "cell-0", testNow)
 		if err != nil || !st.Exists || !st.Ready {
 			t.Errorf("got %+v/%v", st, err)
 		}
@@ -143,7 +160,7 @@ func TestGetNodeState(t *testing.T) {
 
 	t.Run("no Ready condition is not ready", func(t *testing.T) {
 		n := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "cell-0"}}
-		st, _ := GetNodeState(ctx, fake.NewSimpleClientset(n), "cell-0")
+		st, _ := GetNodeState(ctx, fake.NewSimpleClientset(n), "cell-0", testNow)
 		if st.Ready {
 			t.Error("readiness assumed from silence")
 		}
@@ -152,9 +169,98 @@ func TestGetNodeState(t *testing.T) {
 	t.Run("cordoned", func(t *testing.T) {
 		n := readyNode("cell-0", nil)
 		n.Spec.Unschedulable = true
-		st, _ := GetNodeState(ctx, fake.NewSimpleClientset(n), "cell-0")
+		st, _ := GetNodeState(ctx, fake.NewSimpleClientset(n), "cell-0", testNow)
 		if !st.Unschedulable {
 			t.Error("cordon not reported")
+		}
+	})
+}
+
+// TestKubeletLive pins the signal that decides whether a Node may be deleted.
+// Getting it wrong in the "live" direction deletes a working cell's Node and the
+// kubelet never re-registers (#14), so every unknown case must report live.
+func TestKubeletLive(t *testing.T) {
+	ctx := context.Background()
+	node := readyNode("cell-0", nil)
+
+	cases := []struct {
+		name       string
+		objects    []runtime.Object
+		heartbeat  time.Duration // Ready-condition heartbeat age; 0 means absent
+		wantLive   bool
+		wantSource string
+	}{
+		{
+			name:       "fresh lease is live",
+			objects:    []runtime.Object{nodeLease("cell-0", 5*time.Second)},
+			wantLive:   true,
+			wantSource: "Lease",
+		},
+		{
+			name:       "expired lease is not live",
+			objects:    []runtime.Object{nodeLease("cell-0", 10*time.Minute)},
+			wantLive:   false,
+			wantSource: "Lease",
+		},
+		{
+			name:       "lease that was never renewed is not live",
+			objects:    []runtime.Object{&coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cell-0", Namespace: nodeLeaseNamespace}}},
+			wantLive:   false,
+			wantSource: "Lease",
+		},
+		{
+			// No lease and no status heartbeat: nothing is known, and an unknown
+			// must never authorise a delete.
+			name:       "nothing readable reports live",
+			wantLive:   true,
+			wantSource: "",
+		},
+		{
+			// A recent status heartbeat is the fallback signal. Its resolution is
+			// coarse (5 min by default), hence the wide grace.
+			name:       "recent node status is live",
+			heartbeat:  2 * time.Minute,
+			wantLive:   true,
+			wantSource: "NodeStatus",
+		},
+		{
+			name:       "stale node status is not live",
+			heartbeat:  30 * time.Minute,
+			wantLive:   false,
+			wantSource: "NodeStatus",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			n := node.DeepCopy()
+			if c.heartbeat != 0 {
+				n.Status.Conditions[0].LastHeartbeatTime = metav1.NewTime(testNow.Add(-c.heartbeat))
+			}
+			cs := fake.NewSimpleClientset(append([]runtime.Object{n}, c.objects...)...)
+			st, err := GetNodeState(ctx, cs, "cell-0", testNow)
+			if err != nil {
+				t.Fatalf("GetNodeState: %v", err)
+			}
+			if st.KubeletLive != c.wantLive || st.HeartbeatSource != c.wantSource {
+				t.Errorf("KubeletLive=%v source=%q, want %v/%q",
+					st.KubeletLive, st.HeartbeatSource, c.wantLive, c.wantSource)
+			}
+		})
+	}
+
+	t.Run("an unreadable lease falls back rather than reporting dead", func(t *testing.T) {
+		cs := fake.NewSimpleClientset(node.DeepCopy())
+		cs.PrependReactor("get", "leases", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(
+				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"}, "cell-0", errors.New("no rbac"))
+		})
+		st, err := GetNodeState(ctx, cs, "cell-0", testNow)
+		if err != nil {
+			t.Fatalf("a lease we may not read must not fail the observation: %v", err)
+		}
+		if !st.KubeletLive {
+			t.Error("a Node whose liveness cannot be established was reported dead — that authorises deleting it")
 		}
 	})
 }

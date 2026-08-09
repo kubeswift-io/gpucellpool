@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+
+	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 )
 
 // NodeState is what the reconciler needs to know about a cell's workload Node.
@@ -25,11 +28,46 @@ type NodeState struct {
 	// in-guest preflight result.
 	Labels      map[string]string
 	Annotations map[string]string
+
+	// KubeletLive is true when a kubelet is heartbeating for this Node right now.
+	//
+	// It exists to separate two things a Node's labels cannot tell apart: a Node
+	// left behind by a dead incarnation of a cell, and the SAME Node object after
+	// the replacement's kubelet adopted it — a kubelet keeps labels it did not set,
+	// so both carry the old identity label. Deleting the second one is
+	// unrecoverable from this side: the kubelet does not re-register, it just logs
+	// "Error updating node status, will retry" forever and the cell never joins.
+	//
+	// Unknown reads as LIVE. Failing to delete a phantom Node costs a stale
+	// capacity reading that the next reconcile corrects; deleting a live one costs
+	// the cell.
+	KubeletLive bool
+
+	// HeartbeatSource names where KubeletLive came from — "Lease", "NodeStatus", or
+	// "" when neither could be read. Recorded because the two have very different
+	// resolutions and an operator debugging a reap needs to know which was used.
+	HeartbeatSource string
 }
+
+// Heartbeat grace periods, per source.
+//
+// The kubelet renews its Lease every ~10s (lease duration 40s), so 90s is already
+// generous. Node STATUS is only pushed every nodeStatusReportFrequency — 5 minutes
+// by default once leases are enabled — so judging liveness by it needs a much wider
+// window, and is a fallback rather than the signal we want.
+const (
+	leaseGrace      = 90 * time.Second
+	nodeStatusGrace = 6 * time.Minute
+)
+
+// nodeLeaseNamespace is where kubelets renew their heartbeat leases.
+const nodeLeaseNamespace = "kube-node-lease"
 
 // GetNodeState reads a cell's Node. A missing Node is not an error: the cell is
 // simply still joining.
-func GetNodeState(ctx context.Context, cs kubernetes.Interface, name string) (NodeState, error) {
+//
+// now is passed in rather than read from the clock so liveness is testable.
+func GetNodeState(ctx context.Context, cs kubernetes.Interface, name string, now time.Time) (NodeState, error) {
 	node, err := cs.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return NodeState{}, nil
@@ -37,13 +75,74 @@ func GetNodeState(ctx context.Context, cs kubernetes.Interface, name string) (No
 	if err != nil {
 		return NodeState{}, fmt.Errorf("reading node %s: %w", name, err)
 	}
+	live, src := kubeletLive(ctx, cs, node, now)
 	return NodeState{
-		Exists:        true,
-		Ready:         IsReady(node),
-		Unschedulable: node.Spec.Unschedulable,
-		Labels:        node.Labels,
-		Annotations:   node.Annotations,
+		Exists:          true,
+		Ready:           IsReady(node),
+		Unschedulable:   node.Spec.Unschedulable,
+		Labels:          node.Labels,
+		Annotations:     node.Annotations,
+		KubeletLive:     live,
+		HeartbeatSource: src,
 	}, nil
+}
+
+// ListPoolNodes returns the state of every Node in the workload cluster carrying
+// this pool's label, keyed by node name.
+//
+// The pool label — not the operator's own status — is the authority on which Nodes
+// belong to a pool. Status can be lost, and a row is dropped the moment a cell is
+// retired, so anything that cleans up after cells has to be able to find them
+// without it.
+func ListPoolNodes(ctx context.Context, cs kubernetes.Interface, pool string, now time.Time) (map[string]NodeState, error) {
+	list, err := cs.CoreV1().Nodes().List(ctx, metav1.ListOptions{
+		LabelSelector: cellsv1alpha1.LabelPool + "=" + pool,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing nodes of pool %s: %w", pool, err)
+	}
+	out := make(map[string]NodeState, len(list.Items))
+	for i := range list.Items {
+		node := &list.Items[i]
+		live, src := kubeletLive(ctx, cs, node, now)
+		out[node.Name] = NodeState{
+			Exists:          true,
+			Ready:           IsReady(node),
+			Unschedulable:   node.Spec.Unschedulable,
+			Labels:          node.Labels,
+			Annotations:     node.Annotations,
+			KubeletLive:     live,
+			HeartbeatSource: src,
+		}
+	}
+	return out, nil
+}
+
+// kubeletLive reports whether a kubelet is currently heartbeating for a Node.
+//
+// The Lease is the real signal. When it cannot be read — RBAC, an old cluster, a
+// transient error — this falls back to the Ready condition's heartbeat, and if
+// that is missing too it reports live: see NodeState.KubeletLive for why unknown
+// must not authorise a delete.
+func kubeletLive(ctx context.Context, cs kubernetes.Interface, node *corev1.Node, now time.Time) (bool, string) {
+	lease, err := cs.CoordinationV1().Leases(nodeLeaseNamespace).Get(ctx, node.Name, metav1.GetOptions{})
+	switch {
+	case err == nil && lease.Spec.RenewTime != nil:
+		return now.Sub(lease.Spec.RenewTime.Time) < leaseGrace, "Lease"
+	case err == nil:
+		// A Lease with no renewTime has never been held.
+		return false, "Lease"
+	case apierrors.IsNotFound(err):
+		// No Lease at all. On a lease-enabled cluster a live kubelet always has
+		// one, so this is evidence of absence — but only once the node status
+		// agrees, which the fallback below checks.
+	}
+	for _, c := range node.Status.Conditions {
+		if c.Type == corev1.NodeReady && !c.LastHeartbeatTime.IsZero() {
+			return now.Sub(c.LastHeartbeatTime.Time) < nodeStatusGrace, "NodeStatus"
+		}
+	}
+	return true, ""
 }
 
 // IsReady reports the Node's Ready condition. An absent condition is not ready —
@@ -136,8 +235,11 @@ func Cordon(ctx context.Context, cs kubernetes.Interface, name string) error {
 }
 
 // DeleteNode removes a cell's Node object. Called for a cell being torn down, and
-// for a stale Node left by a previous incarnation — always BEFORE the replacement
-// joins, never after.
+// for a phantom Node left by a previous incarnation.
+//
+// "Before the replacement joins" cannot be assumed — the replacement's kubelet may
+// already have adopted the object — so the caller must establish that no kubelet is
+// heartbeating for it first (NodeState.KubeletLive).
 func DeleteNode(ctx context.Context, cs kubernetes.Interface, name string) error {
 	err := cs.CoreV1().Nodes().Delete(ctx, name, metav1.DeleteOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {

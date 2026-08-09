@@ -317,6 +317,29 @@ func (f *testFixture) joinNode(name string, instance string, withHAMi bool) {
 	}
 }
 
+// killKubelet makes a Node look like one nobody is heartbeating for: the object
+// stays, Ready stays True, only the heartbeat goes cold. That is precisely the
+// shape of a Node left behind by a deleted VM, and the only thing that
+// distinguishes it from the same object after a live replacement adopted it.
+//
+// envtest runs no kubelet, so nothing renews a Lease here and liveness resolves
+// from the Ready condition's heartbeat.
+func (f *testFixture) killKubelet(name string) {
+	f.t.Helper()
+	node, err := innerClientset.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		f.t.Fatalf("get node %s: %v", name, err)
+	}
+	for i := range node.Status.Conditions {
+		if node.Status.Conditions[i].Type == corev1.NodeReady {
+			node.Status.Conditions[i].LastHeartbeatTime = metav1.NewTime(time.Now().Add(-30 * time.Minute))
+		}
+	}
+	if _, err := innerClientset.CoreV1().Nodes().UpdateStatus(context.Background(), node, metav1.UpdateOptions{}); err != nil {
+		f.t.Fatalf("stop node heartbeat: %v", err)
+	}
+}
+
 func (f *testFixture) node(name string) *corev1.Node {
 	f.t.Helper()
 	n, err := innerClientset.CoreV1().Nodes().Get(context.Background(), name, metav1.GetOptions{})

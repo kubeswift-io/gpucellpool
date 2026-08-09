@@ -230,12 +230,38 @@ a cell's own Node when the cell is deleted, are both always-on paths
 `nodes: [get, list, watch, patch, update, delete]`) and mint a fresh token if
 the credential Secret was built from an older ClusterRole.
 
+### A cell sits in `Joining` forever after being replaced
+
+`waiting for the workload Node to register`, indefinitely, while the VM is
+healthy and reachable — and the workload cluster shows **no Node** for the cell
+even though its CSRs were approved. The kubelet logs
+`Error updating node status, will retry` and
+`Failed to get node when trying to set owner ref to the node lease`.
+
+Its Node object was deleted from under a running kubelet, which then does not
+re-register. Recover by restarting the kubelet inside the cell:
+
+```bash
+# k0s
+ssh <cell> sudo systemctl restart k0sworker
+# kubeadm
+ssh <cell> sudo systemctl restart kubelet
+```
+
+This was a bug (#14, fixed): a Node carrying a previous incarnation's identity
+label was reaped as stale even when the replacement's own kubelet had already
+adopted it. The reap now requires that nothing is heartbeating for the Node —
+so grant `coordination.k8s.io/leases: [get]` in the workload cluster
+(reapply `config/rbac/workload-cluster-observer.yaml`) or the operator has to
+fall back to the Ready condition's heartbeat, which lags by up to 5 minutes.
+
 ### Replacing a cell after a cell-image change
 
-There is **no rolling update**. Changing `spec.cell.guestTemplate` (a new
-`imageRef`, a driver bump) bumps the per-cell template-hash annotation but
-does not touch existing cells (`docs/limitations.md`). To roll a driver
-change out cell by cell, for each cell in turn:
+Automatic rolling update exists — set `spec.updatePolicy.type: RollingUpdate`
+(`docs/updates.md`). The default is `Manual`: changing `spec.cell.guestTemplate`
+(a new `imageRef`, a driver bump) bumps the per-cell template-hash annotation,
+reports `Updated=False/TemplateChanged` with the stale cells named, and touches
+nothing. To roll a change out by hand, for each cell in turn:
 
 ```bash
 # 1. In the WORKLOAD cluster: drain the cell's inner workloads yourself.

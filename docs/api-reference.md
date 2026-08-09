@@ -73,8 +73,10 @@ metadata.labels           = cells.kubeswift.io/{pool,cell,cell-index}
 metadata.annotations       = cells.kubeswift.io/template-hash=<hash>
 ```
 
-A template change bumps the hash but does **not** roll existing cells: v1alpha1
-has no rolling update for `guestTemplate` (see `docs/limitations.md`).
+A template change bumps the hash and reports `Updated=False/TemplateChanged`. It
+rolls existing cells only under `spec.updatePolicy.type: RollingUpdate`; the
+default `Manual` leaves them alone, because a template edit is not consent to
+destroy running work (see `docs/updates.md`).
 
 Under `provisioner: ClusterAPI` the allowed `guestTemplate` fields shrink to
 `imageRef`, `guestClassRef`, `interfaces` — everything else a `KubeSwiftMachine`

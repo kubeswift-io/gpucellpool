@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -263,24 +264,118 @@ func TestReconcilePatchesIdentityLabelsOntoTheNode(t *testing.T) {
 	}
 }
 
-func TestReconcileReapsAStaleNodeBeforeTheReplacementJoins(t *testing.T) {
+func TestReconcileReapsAPhantomNodeWhoseKubeletIsGone(t *testing.T) {
 	f := newFixture(t, nil)
 	f.reconcile()
 	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
 	f.reconcile()
 
-	// A Node with this cell's NAME but a previous incarnation's UID. Adopting it
-	// would report a phantom Ready cell, with HAMi advertising capacity for a GPU
-	// that no longer exists.
+	// A Node with this cell's NAME, a previous incarnation's UID, and no kubelet
+	// behind it. Adopting it would report a phantom Ready cell, with HAMi
+	// advertising capacity for a GPU that no longer exists.
 	f.joinNode("cells-0", "uid-from-a-previous-life", true)
+	f.killKubelet("cells-0")
 	f.reconcile()
 
 	if _, err := innerClientset.CoreV1().Nodes().Get(context.Background(), "cells-0", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("stale node survived: %v", err)
+		t.Fatalf("phantom node survived: %v", err)
 	}
 	pool := f.getPool()
 	if pool.Status.Cells[0].Phase == cellsv1alpha1.CellPhaseReady {
-		t.Error("cell went Ready off a stale node")
+		t.Error("cell went Ready off a phantom node")
+	}
+}
+
+// TestReconcileAdoptsANodeItsOwnKubeletTookOver is the other half of #14, and the
+// case that cost a cell: a replacement's kubelet registers under the reused node
+// name, adopts the EXISTING Node object, and keeps the identity label it finds
+// there. By label alone that is indistinguishable from a phantom — but deleting it
+// is unrecoverable, because a kubelet whose Node is removed under it does not
+// re-register. It logs "Error updating node status, will retry" and the cell waits
+// forever.
+func TestReconcileAdoptsANodeItsOwnKubeletTookOver(t *testing.T) {
+	f := newFixture(t, nil)
+	f.reconcile()
+	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
+	f.reconcile()
+
+	// Same foreign label as above — the difference is only that a kubelet is
+	// heartbeating for it (joinNode stamps a fresh heartbeat).
+	f.joinNode("cells-0", "uid-from-a-previous-life", true)
+	f.reconcile()
+
+	node, err := innerClientset.CoreV1().Nodes().Get(context.Background(), "cells-0", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("the live cell's Node was deleted under its kubelet: %v", err)
+	}
+	if got := node.Labels[cellsv1alpha1.LabelInstance]; got != f.guestUID("cells-0") {
+		t.Errorf("instance label = %q, want the current guest UID %q — an adopted Node must be re-labelled, "+
+			"or it looks stale again on the next pass", got, f.guestUID("cells-0"))
+	}
+	if p := f.getPool(); p.Status.Cells[0].Phase != cellsv1alpha1.CellPhaseReady {
+		t.Errorf("cell phase = %s, want Ready: an adopted Node is this cell's Node", p.Status.Cells[0].Phase)
+	}
+}
+
+// TestReconcileReapsTheNodeOfARetiredCell covers what SET UP the collision: a
+// failed cell's row is dropped when the pool no longer wants its index, and
+// nothing else remembers the cell afterwards. Leaving its Node behind is what a
+// later replacement adopts.
+func TestReconcileReapsTheNodeOfARetiredCell(t *testing.T) {
+	f := newFixture(t, nil)
+	f.reconcile()
+	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
+	f.joinNode("cells-0", f.guestUID("cells-0"), true)
+	f.reconcile()
+	if p := f.getPool(); p.Status.Cells[0].Phase != cellsv1alpha1.CellPhaseReady {
+		t.Fatalf("setup: phase = %s", p.Status.Cells[0].Phase)
+	}
+
+	// The guest goes away and the pool stops wanting the slot, which is the moment
+	// the status row is dropped. The kubelet has only just died, so the Node still
+	// LOOKS live — and that is the whole difficulty: a cleanup that only gets this
+	// one chance finds a live-looking Node, correctly declines to delete it, and
+	// never looks again. Measured on hardware before this was a sweep: the Node sat
+	// there NotReady for four minutes and nothing ever came back for it.
+	f.deleteGuest("cells-0")
+	f.patchPool(func(p *cellsv1alpha1.GPUCellPool) { p.Spec.Replicas = 0 })
+	f.reconcile()
+
+	if _, err := innerClientset.CoreV1().Nodes().Get(context.Background(), "cells-0", metav1.GetOptions{}); err != nil {
+		t.Fatalf("a Node whose kubelet had not yet gone cold was deleted: %v", err)
+	}
+
+	// Now the heartbeat goes cold. A later pass must pick it up, with no status row
+	// left to remind it the cell ever existed.
+	f.killKubelet("cells-0")
+	f.reconcile()
+
+	if _, err := innerClientset.CoreV1().Nodes().Get(context.Background(), "cells-0", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("the retired cell's Node was left behind: %v", err)
+	}
+}
+
+// TestReconcileLeavesForeignNodesAlone keeps the orphan sweep from becoming a
+// licence to delete nodes: it is keyed on this pool's label, and a Node without it
+// is none of the pool's business however dead its kubelet looks.
+func TestReconcileLeavesForeignNodesAlone(t *testing.T) {
+	f := newFixture(t, nil)
+	f.reconcile()
+	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
+	f.joinNode("cells-0", f.guestUID("cells-0"), true)
+
+	// A node belonging to somebody else, cold and unlabelled.
+	other := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "someone-elses-worker"}}
+	if _, err := innerClientset.CoreV1().Nodes().Create(context.Background(), other, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create foreign node: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = innerClientset.CoreV1().Nodes().Delete(context.Background(), "someone-elses-worker", metav1.DeleteOptions{})
+	})
+	f.reconcile()
+
+	if _, err := innerClientset.CoreV1().Nodes().Get(context.Background(), "someone-elses-worker", metav1.GetOptions{}); err != nil {
+		t.Fatalf("the pool deleted a Node it does not own: %v", err)
 	}
 }
 
