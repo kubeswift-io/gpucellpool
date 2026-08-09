@@ -2,9 +2,12 @@
 
 Everything here is a real, current gap — not a hedge. Where there is a
 practical workaround, it is stated; where the answer is "a human has to act",
-that is stated too.
+that is stated too. Each gap that is tracked links its issue, so you can see
+whether it is being worked on rather than guessing.
 
 ## HAMi DRA mode is unimplemented
+
+Tracked as [#4](https://github.com/kubeswift-io/gpucellpool/issues/4).
 
 `spec.capacity.hami.mode: DRA` is accepted by the API but
 `internal/capacity`'s DRA path returns `ErrUnsupported` — capacity reads,
@@ -13,6 +16,8 @@ than silently reading zero. **`DevicePlugin` mode is the only implementation.**
 Use it (the default) even if your HAMi install also has DRA mode available.
 
 ## No rolling update on `guestTemplate` change
+
+Tracked as [#2](https://github.com/kubeswift-io/gpucellpool/issues/2).
 
 Changing `spec.cell.guestTemplate` (a new `imageRef`, a driver bump, a
 different `guestClassRef`) bumps the per-cell template-hash annotation but
@@ -27,6 +32,8 @@ cordon and drain the cell's workload Node before deleting the cell's
 `docs/runbook.md` for the sequence.
 
 ## No automated outer-drain sequencing
+
+Tracked as [#3](https://github.com/kubeswift-io/gpucellpool/issues/3).
 
 A cell is a VFIO guest, so KubeSwift can only move it with an *offline*
 migration — a VM restart (`docs/concepts.md` — "Cells are cattle"). Every
@@ -51,6 +58,8 @@ token expires, new cells fail at `Joining` with `JoinTimeout`
 (`docs/runbook.md` has the diagnostic).
 
 ## Pools of two or more cells: harness-only
+
+Tracked as [#5](https://github.com/kubeswift-io/gpucellpool/issues/5).
 
 The reference lab has exactly one GPU. Everything about a *single* cell —
 provisioning, boot, join, HAMi accounting, autoscale-to-one, teardown — is

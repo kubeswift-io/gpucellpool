@@ -1,0 +1,41 @@
+# A ready-made cell image, so you do not have to bake one to try this out.
+#
+# This is the exact image the project's own hardware validation ran on, published as a
+# public OCI artifact. No pull secret is needed. Apply it, wait for Ready (it pulls
+# ~11 GiB and expands to a 30 GiB raw disk, so allow a few minutes), then reference it
+# from your pool's guestTemplate as `imageRef: {name: gpu-worker-noble}`.
+#
+# It is a REFERENCE image, not a universal one. Two things pin it, and either can make
+# it the wrong choice for you:
+#
+#   * Driver 580.173.02, the PROPRIETARY branch, chosen for a Pascal card (GTX 1080).
+#     The open kernel modules are Turing and newer only. On newer hardware you may
+#     prefer -open, which means baking your own.
+#   * The node binaries are k0s. If your workload cluster is kubeadm, RKE2 or k3s, this
+#     image has the driver and container toolkit you need but not your node binaries —
+#     either install them from the join cloud-init (slower first boot, no rebake) or
+#     bake an image for your distribution.
+#
+# Build your own with hack/build-cell-image.sh; docs/cell-image.md covers both paths and
+# what any cell image must satisfy.
+apiVersion: image.kubeswift.io/v1alpha1
+kind: SwiftImage
+metadata:
+  name: gpu-worker-noble
+  namespace: gpu-cells
+spec:
+  # The published artifact is already raw. format is the INPUT format: declaring raw for
+  # a qcow2 source skips the conversion and hands Cloud Hypervisor a qcow2 it reads as
+  # raw, which fails at boot with a refcount error rather than at import.
+  format: raw
+  osType: linux
+  cloneStrategy: copy
+  rootDisk:
+    # Must be at least the baked disk size. The clone is most of a cell's startup time
+    # (measured: ~3 minutes of 4m45s), so a smaller image is the cheapest latency win
+    # available if you bake your own.
+    size: 30Gi
+  source:
+    oci:
+      repository: ghcr.io/kubeswift-io/gpucellpool/images
+      tag: gpu-worker-noble-580-v2
