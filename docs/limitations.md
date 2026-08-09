@@ -15,22 +15,6 @@ demand signal (`docs/autoscaling.md`), and readiness all fail loudly rather
 than silently reading zero. **`DevicePlugin` mode is the only implementation.**
 Use it (the default) even if your HAMi install also has DRA mode available.
 
-## No rolling update on `guestTemplate` change
-
-Tracked as [#2](https://github.com/kubeswift-io/gpucellpool/issues/2).
-
-Changing `spec.cell.guestTemplate` (a new `imageRef`, a driver bump, a
-different `guestClassRef`) bumps the per-cell template-hash annotation but
-**does not roll existing cells**. `status.conditions` will not tell you a
-template drifted either — there is no `Updated` condition in v1alpha1.
-
-This is the most likely real operational task you will hit: **updating the
-NVIDIA driver (or anything else) in the cell image means manually recreating
-every cell**, one at a time, and doing the *inner* drain yourself first —
-cordon and drain the cell's workload Node before deleting the cell's
-`SwiftGuest`/`Machine`, or you destroy running HAMi workloads. See
-`docs/runbook.md` for the sequence.
-
 ## No automated outer-drain sequencing
 
 Tracked as [#3](https://github.com/kubeswift-io/gpucellpool/issues/3).
@@ -90,6 +74,11 @@ correct for a pool whose `replicas` (and `autoscaling.maxReplicas`, if set)
 is 1 — use `resourceClaimTemplateName` for anything larger.
 
 ## What is *not* a limitation, stated for clarity
+
+Replacing cells after a `spec.cell` change is **implemented**: the `Updated`
+condition reports drift, and `updatePolicy.type: RollingUpdate` replaces stale
+cells one at a time behind the drain gate. See `docs/updates.md`. It is opt-in
+because a template edit is not consent to destroy running work.
 
 - Scale-up and scale-down are both implemented (`docs/autoscaling.md`) — the
   earlier design draft that called scale-down "postponed" is stale; ignore

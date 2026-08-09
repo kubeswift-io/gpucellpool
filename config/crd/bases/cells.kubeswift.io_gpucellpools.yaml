@@ -442,6 +442,18 @@ spec:
                 format: int32
                 minimum: 0
                 type: integer
+              updatePolicy:
+                description: UpdatePolicy decides what happens to existing cells when
+                  spec.cell changes.
+                properties:
+                  type:
+                    default: Manual
+                    description: Type is Manual (default) or RollingUpdate.
+                    enum:
+                    - Manual
+                    - RollingUpdate
+                    type: string
+                type: object
               workloadCluster:
                 description: WorkloadCluster is the cluster the cells join and where
                   HAMi runs.
@@ -640,6 +652,13 @@ spec:
                         ReadyOnce records that this cell reached Ready at least once, so a later
                         Ready after a regression is not mistaken for a startup.
                       type: boolean
+                    templateHash:
+                      description: |-
+                        TemplateHash is the cell template this cell was CREATED from. When it differs
+                        from the pool's current template the cell is running an older shape, which is
+                        what the Updated condition reports — and, under
+                        updatePolicy.type: RollingUpdate, what gets it replaced.
+                      type: string
                   required:
                   - index
                   - name

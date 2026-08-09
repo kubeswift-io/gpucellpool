@@ -100,6 +100,9 @@ type ConditionInput struct {
 	Membership  MembershipPlan
 	Progressing bool
 
+	// Rollout is the template-drift decision, which drives the Updated condition.
+	Rollout RolloutDecision
+
 	// Autoscaling reports whether demand-driven scale-up is enabled, and Scale is
 	// the last decision — the reason is where an operator looks to understand why
 	// the pool did or did not grow.
@@ -209,6 +212,11 @@ func ComputeConditions(in ConditionInput) []metav1.Condition {
 	if in.Autoscaling {
 		set(cellsv1alpha1.ConditionScalingActive, in.DemandKnown, in.Scale.Reason, in.Scale.Message)
 	}
+
+	// Template drift. Present always, because "every cell matches what you asked
+	// for" is worth being able to assert, not only worth reporting when it breaks.
+	set(cellsv1alpha1.ConditionUpdated, in.Rollout.UpToDate,
+		in.Rollout.Reason, in.Rollout.Message)
 
 	// Aggregate.
 	ready := in.Ready == in.Desired

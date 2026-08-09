@@ -31,6 +31,16 @@ const (
 	// being drained or cordoned. Cells are never offline-migrated, so this is a
 	// signal for the operator (and, later, for automated replacement).
 	ConditionCellDrainRequested = "CellDrainRequested"
+
+	// ConditionUpdated reports whether every cell was created from the CURRENT
+	// cell template. False means at least one cell is running an older shape — a
+	// previous image, guest class or interface set.
+	//
+	// It is only ever informational until spec.updatePolicy.type is RollingUpdate,
+	// because replacing a cell destroys whatever the old one was still running
+	// unless it is drained first. Knowing you have drifted is useful on its own;
+	// acting on it is a decision the operator opts into.
+	ConditionUpdated = "Updated"
 )
 
 // Condition reasons. Every reason names a distinct operator action: "your token
@@ -44,6 +54,9 @@ const (
 	ReasonCellCreating    = "CellCreating"
 	ReasonCellDraining    = "CellDraining"
 	ReasonTemplateChanged = "TemplateChanged"
+	ReasonAllCellsCurrent = "AllCellsCurrent"
+	ReasonRollingUpdate   = "RollingUpdate"
+	ReasonUpdateBlocked   = "UpdateBlocked"
 
 	ReasonConnected         = "Connected"
 	ReasonUnreachable       = "Unreachable"

@@ -51,6 +51,38 @@ type GPUCellPoolSpec struct {
 	// Deletion controls teardown behaviour for the pool.
 	// +optional
 	Deletion *DeletionSpec `json:"deletion,omitempty"`
+
+	// UpdatePolicy decides what happens to existing cells when spec.cell changes.
+	// +optional
+	UpdatePolicy *UpdatePolicySpec `json:"updatePolicy,omitempty"`
+}
+
+// Cell update modes.
+const (
+	// UpdateManual leaves existing cells alone when the template changes. The
+	// pool reports Updated=False/TemplateChanged and which cells are stale; you
+	// replace them when it suits you.
+	UpdateManual = "Manual"
+	// UpdateRolling replaces stale cells one at a time, using the same drain gate
+	// as automatic scale-down.
+	UpdateRolling = "RollingUpdate"
+)
+
+// UpdatePolicySpec decides what happens to cells already running an older
+// spec.cell than the pool now declares.
+//
+// Manual is the default because replacing a cell destroys whatever the old one was
+// still running unless it is drained first, and a template edit is not consent to
+// that. RollingUpdate is opt-in, and it is deliberately slow: one cell at a time,
+// only cells the capacity provider reports as IDLE, and never while another cell is
+// already being created or drained. On a pool whose cells are all busy it will
+// therefore make no progress — and says so, rather than forcing its way through.
+type UpdatePolicySpec struct {
+	// Type is Manual (default) or RollingUpdate.
+	// +kubebuilder:validation:Enum=Manual;RollingUpdate
+	// +kubebuilder:default=Manual
+	// +optional
+	Type string `json:"type,omitempty"`
 }
 
 // Scale-down modes.
@@ -555,6 +587,13 @@ type CellStatus struct {
 	// Ready after a regression is not mistaken for a startup.
 	// +optional
 	ReadyOnce bool `json:"readyOnce,omitempty"`
+
+	// TemplateHash is the cell template this cell was CREATED from. When it differs
+	// from the pool's current template the cell is running an older shape, which is
+	// what the Updated condition reports — and, under
+	// updatePolicy.type: RollingUpdate, what gets it replaced.
+	// +optional
+	TemplateHash string `json:"templateHash,omitempty"`
 
 	// LastTransitionTime is when Phase last changed.
 	// +optional

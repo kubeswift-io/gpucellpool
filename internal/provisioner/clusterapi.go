@@ -322,6 +322,7 @@ func (p *ClusterAPIProvisioner) observeMachine(
 		created := ts
 		st.CreatedAt = &created
 	}
+	st.TemplateHash = machine.GetAnnotations()[cellsv1alpha1.AnnotationTemplateHash]
 	st.Phase, _, _ = unstructured.NestedString(machine.Object, "status", "phase")
 
 	switch st.Phase {
@@ -355,6 +356,9 @@ func (p *ClusterAPIProvisioner) observeMachine(
 	// The guest's own view supplies GPU, host and address; the Machine keeps
 	// ownership of lifecycle and identity.
 	guestState := observe(guest, req.NodeIPFrom)
+	// Deliberately NOT guestState.TemplateHash: under this provisioner the object
+	// this operator creates and versions is the Machine, and the backing guest is
+	// capi-kubeswift's to annotate however it likes.
 	st.GPUDevices = guestState.GPUDevices
 	st.HostNode = guestState.HostNode
 	st.Address = guestState.Address

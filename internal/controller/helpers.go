@@ -125,6 +125,20 @@ func autoScaleDown(pool *cellsv1alpha1.GPUCellPool) bool {
 	return autoscalingEnabled(pool) && pool.Spec.Autoscaling.ScaleDown == cellsv1alpha1.ScaleDownAuto
 }
 
+// rollingUpdate reports whether the pool replaces stale cells itself.
+func rollingUpdate(pool *cellsv1alpha1.GPUCellPool) bool {
+	return pool.Spec.UpdatePolicy != nil &&
+		pool.Spec.UpdatePolicy.Type == cellsv1alpha1.UpdateRolling
+}
+
+// needsIdleness reports whether anything this pass may want to REMOVE a cell, and
+// therefore needs to know which cells hold nothing. Both automatic scale-down and a
+// rolling update destroy a cell, so both require it — reading it for only one of them
+// left the other seeing no idle cells at all and silently never acting.
+func needsIdleness(pool *cellsv1alpha1.GPUCellPool) bool {
+	return autoScaleDown(pool) || rollingUpdate(pool)
+}
+
 // liveCells counts cells that exist and are not on their way out — the baseline a
 // scaling decision grows from.
 func liveCells(cells []cellsv1alpha1.CellStatus) int32 {

@@ -165,6 +165,7 @@ func observe(guest *unstructured.Unstructured, nodeIPFrom string) OuterState {
 		st.CreatedAt = &created
 	}
 
+	st.TemplateHash = guest.GetAnnotations()[cellsv1alpha1.AnnotationTemplateHash]
 	st.Phase, _, _ = unstructured.NestedString(guest.Object, "status", "phase")
 	st.HostNode, _, _ = unstructured.NestedString(guest.Object, "status", "gpu", "nodeName")
 	if st.HostNode == "" {

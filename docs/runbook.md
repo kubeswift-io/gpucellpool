@@ -21,6 +21,7 @@ kubectl get cellpool <name> -n <ns> -o jsonpath='{range .status.conditions[*]}{.
 | `PhysicalGPUsAvailable` | the infrastructure cluster's GPU inventory |
 | `CapacityAvailable` | the workload cluster's GPU is full, or unreadable |
 | `ScalingActive` | demand could not be read (only present when autoscaling is on) |
+| `Updated` | cells are running an older `spec.cell` than the pool declares — see below |
 | `Ready` alone | individual cells — read `status.cells[]` |
 
 Per-cell detail, which names the layer and the reason:
@@ -192,6 +193,24 @@ kubectl get machine <cell> -n <ns> -o jsonpath='{.status.phase}'
 An empty providerID with the Machine in `Provisioning` means the provider is still
 working. A `Provisioned` Machine with no providerID is a capi-kubeswift problem, not
 a pool problem.
+
+### `Updated=False` — cells are running an older template
+
+Expected after any `spec.cell` edit. The reason says what will happen next:
+
+| Reason | Meaning |
+|---|---|
+| `TemplateChanged` | drift detected, and `updatePolicy.type` is `Manual` — nothing will be replaced. Replace cells yourself, or switch to `RollingUpdate`. See `docs/updates.md` |
+| `RollingUpdate` | a cell is being replaced right now |
+| `UpdateBlocked` | a rolling update is wanted but cannot proceed. The message names the cause: every stale cell still holds workloads, the pool is mid-resize, another cell is already being replaced, or the workload cluster is unreachable |
+
+`status.cells[].templateHash` tells you which cells are stale. An empty hash
+counts as current — it predates the field, and treating unknown as out-of-date
+would replace a healthy pool.
+
+A rolling update that is blocked on busy cells stays blocked indefinitely, by
+design; it will not evict anything. `kubectl drain <cell>` in the workload
+cluster releases the GPU and the rollout proceeds on its next pass.
 
 ### Capacity numbers look stale
 
