@@ -19,8 +19,24 @@ All notable changes to this project are documented here. The format follows
   stalls visibly (`UpdateBlocked`) rather than evicting anything. See
   `docs/updates.md`.
 
+- **An observability pack**, off by default because it needs the Prometheus Operator
+  CRDs: a `ServiceMonitor`, a Grafana dashboard delivered as a sidecar-discovered
+  `ConfigMap`, and eight warning-biased alerts. The two capacity layers get their own
+  alerts — `GPUCellPoolNoFreePhysicalGPU` (no whole device left in the infrastructure
+  cluster, and the pool wants one) versus `GPUCellPoolSharedGPUExhausted` (healthy
+  cells whose GPU is entirely handed out) — because they are different problems with
+  different remedies. Enable with `--set monitoring.enabled=true`; see
+  `docs/observability.md`.
+- A `Service` in front of the metrics port, and a `metrics` container port. There was
+  no way to scrape the endpoint at all before: nothing exposed it.
+
 ### Fixed
 
+- **The chart claimed the metrics endpoint had authn/authz.** It does not — it is
+  HTTPS with a self-signed certificate and no authorization. The claim is corrected
+  and the real posture (and how to restrict it) documented; adding the filter pulls
+  `k8s.io/apiserver` into a deliberately small dependency tree, so it is tracked
+  separately rather than done in passing.
 - **A replacement cell inherited its predecessor's teardown.** Cell names are
   reused (index 0 is always `<pool>-0`) and status rows are keyed by name, so a
   freshly created cell adopted the previous incarnation's `Draining` phase and was

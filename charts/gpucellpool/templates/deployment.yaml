@@ -35,6 +35,10 @@ spec:
           ports:
             - name: health
               containerPort: 8081
+            {{- if ne (.Values.metrics.bindAddress | toString) "0" }}
+            - name: metrics
+              containerPort: {{ include "gpucellpool.metricsPort" . }}
+            {{- end }}
             {{- if .Values.webhook.enabled }}
             - name: webhook
               containerPort: {{ .Values.webhook.port }}

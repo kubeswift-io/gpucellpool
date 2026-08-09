@@ -40,6 +40,15 @@ manifests: controller-gen ## Generate CRDs and RBAC into config/, and sync the c
 	# kubebuilder markers and the chart's hand-written copy drifted independently —
 	# and the chart silently lacked the Cluster API rules it needed.
 	sed -n '/^rules:/,$$p' config/rbac/role.yaml | tail -n +2 > charts/gpucellpool/rules.yaml
+	$(MAKE) dashboards-sync
+
+.PHONY: dashboards-sync
+dashboards-sync: ## Copy the Grafana dashboards into the chart.
+	# config/grafana is the source of truth; the chart needs its own copy because
+	# Helm can only package files inside the chart directory. `verify` diffs the
+	# two, so an edit to one and not the other fails CI instead of shipping a
+	# dashboard nobody sees.
+	cp config/grafana/*.json charts/gpucellpool/dashboards/
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy methods.

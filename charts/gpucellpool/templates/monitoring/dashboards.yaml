@@ -1,0 +1,31 @@
+{{- $mon := .Values.monitoring | default dict }}
+{{- $db := $mon.dashboards | default dict }}
+{{- if and $mon.enabled (ternary $db.enabled true (hasKey $db "enabled")) }}
+{{- $ns := $db.namespace | default .Release.Namespace }}
+{{- $label := $db.label | default "grafana_dashboard" }}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" }}
+---
+# A Grafana dashboard, discovered by the Grafana sidecar via the {{ $label }}
+# label. The JSONs under dashboards/ are synced verbatim from config/grafana/ by
+# `make dashboards-sync`, and drift fails `make verify` in CI — a hand-edited copy
+# here would silently diverge from the source of truth.
+#
+# Set monitoring.dashboards.namespace to your Grafana namespace if its sidecar
+# only watches its own (that is the default).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{ $label }}: "1"
+    {{- include "gpucellpool.labels" $ | nindent 4 }}
+  {{- with $db.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

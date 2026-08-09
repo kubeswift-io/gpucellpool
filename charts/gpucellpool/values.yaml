@@ -33,9 +33,41 @@ webhook:
     issuerRef: {}    # e.g. {name: my-issuer, kind: ClusterIssuer, group: cert-manager.io}
 
 metrics:
-  # 0 disables the metrics endpoint. Serving is HTTPS with authn/authz.
+  # 0 disables the metrics endpoint.
   bindAddress: ":8443"
+  # secure serves over HTTPS with a self-signed certificate. It does NOT
+  # authenticate or authorize scrapers: anything able to reach the pod on this
+  # port can read the series, which carry pool and namespace names and capacity
+  # figures — no credentials, no guest data. Restrict it with a NetworkPolicy if
+  # that matters to you, or set bindAddress to "0" to serve nothing.
   secure: true
+
+# Prometheus Operator integration and Grafana dashboards. Off by default: on it
+# requires the monitoring.coreos.com CRDs, and a default install should not depend
+# on them.
+monitoring:
+  enabled: false
+  # ServiceMonitor scraping the manager's /metrics endpoint.
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    # Extra labels for Prometheus instances that select ServiceMonitors by label
+    # (e.g. release: kube-prometheus-stack).
+    additionalLabels: {}
+  # Grafana dashboards as sidecar-discovered ConfigMaps.
+  dashboards:
+    enabled: true
+    # The sidecar discovery label (kube-prometheus-stack's default shown).
+    label: grafana_dashboard
+    # Namespace for the ConfigMaps. Empty = the release namespace; set it to your
+    # Grafana namespace if the sidecar only watches its own (its default).
+    namespace: ""
+    # Extra annotations, e.g. grafana_folder: KubeSwift.
+    annotations: {}
+  # Starter alert pack — warning-biased; see docs/observability.md.
+  prometheusRule:
+    enabled: true
+    additionalLabels: {}
 
 # Install the CRDs. Note that `helm upgrade` never updates files in crds/, so a
 # CRD change needs `kubectl apply -f charts/gpucellpool/crds/` — the same caveat
