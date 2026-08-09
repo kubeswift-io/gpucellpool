@@ -62,8 +62,20 @@ type GPUCellPoolReconciler struct {
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=kubeswiftmachines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=bootstrap.cluster.x-k8s.io,resources=*,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// Secrets need create+update, not only read: the operator RENDERS a per-cell
+// bootstrap Secret from the user's join template (reconcileBootstrapSecret). A
+// read-only grant let the chart install, pass every test that used admin
+// credentials, and then fail on the first cell with "secrets is forbidden".
+// Delete is deliberately absent — the per-cell Secret carries the pool's
+// ownerRef and is garbage-collected.
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
+// Events need BOTH groups. The core-group grant alone looks right and is
+// useless: the recorder writes through the events.k8s.io API, so every event
+// this operator emits was rejected with "events.events.k8s.io is forbidden" —
+// visible only in the manager log, never to the operator reading `kubectl
+// describe gpucellpool`. The core grant stays for clients that still read there.
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile implements the loop in docs/design/gpucellpool-reconciliation.md §4.
 func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

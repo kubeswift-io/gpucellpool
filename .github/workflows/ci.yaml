@@ -58,6 +58,42 @@ jobs:
         run: |
           helm lint charts/gpucellpool
           helm template gpucellpool charts/gpucellpool --namespace gpucellpool-system > /dev/null
+      # The release workflow pushes the git tag verbatim (vX.Y.Z) while appVersion
+      # carries no leading v, so a default install once asked for a tag that had
+      # never been published and failed on its own image. Assert the two agree.
+      - name: Default image tag matches what the release workflow publishes
+        run: |
+          want="v$(grep '^appVersion:' charts/gpucellpool/Chart.yaml | awk '{print $2}' | tr -d '\"')"
+          got=$(helm template gpucellpool charts/gpucellpool \
+                  | grep -oE 'gpucellpool/manager:[^"]+' | head -1 | cut -d: -f2)
+          echo "appVersion implies $want; chart renders $got"
+          test "$want" = "$got"
+
+      # Both of these shipped broken in v0.1.0 and neither could fail a test that
+      # ran with admin credentials: the operator RENDERS a per-cell bootstrap
+      # Secret, and its recorder writes through events.k8s.io. A read-only secrets
+      # grant meant no chart-installed pool could ever create a cell; a
+      # core-group-only events grant meant every event was silently rejected.
+      - name: Chart RBAC permits what the operator actually does
+        run: |
+          helm template gpucellpool charts/gpucellpool --show-only templates/rbac.yaml > /tmp/rbac.yaml
+          python3 -c '
+          import sys, yaml
+          need = {"secrets": {"create", "update"}, "events": {"create"}}
+          have = {k: set() for k in need}
+          for doc in yaml.safe_load_all(open("/tmp/rbac.yaml")):
+              for rule in (doc or {}).get("rules", []):
+                  if "events" in rule.get("resources", []) and "events.k8s.io" not in rule.get("apiGroups", []):
+                      continue
+                  for res in rule.get("resources", []):
+                      if res in have:
+                          have[res] |= set(rule.get("verbs", []))
+          for res, verbs in need.items():
+              missing = verbs - have[res]
+              assert not missing, "%s missing %s (have %s)" % (res, sorted(missing), sorted(have[res]))
+          print("rbac ok:", {k: sorted(v) for k, v in have.items()})
+          '
+
       # The chart ships a copy of the CRD; helm upgrade never updates crds/, so a
       # stale copy would install an old schema on a fresh cluster and silently
       # drop fields.
