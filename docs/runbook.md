@@ -304,6 +304,39 @@ correct, but slower than doing the drain first.
 
 ---
 
+## No `gpucell_*` metrics, and every alert quiet
+
+Not a healthy fleet — a dead scrape. The metrics endpoint requires a bearer token
+whose owner may `get /metrics`, so a scraper missing either gets nothing, and
+every alert in the pack except `GPUCellPoolMetricsUnscrapable` is written over the
+series that just disappeared.
+
+Read the target's error in Prometheus (Status → Targets, or the API):
+
+```bash
+kubectl -n <prometheus-ns> port-forward svc/<prometheus> 9090:9090
+curl -s localhost:9090/api/v1/targets | grep -A2 gpucellpool-.*-metrics
+```
+
+| Error | Cause | Fix |
+|---|---|---|
+| `401 Unauthorized` | the scrape carries no token, or an expired/unparseable one | `monitoring.serviceMonitor.bearerTokenFile` — the chart defaults it to Prometheus's own projected token |
+| `403 Forbidden` | the token is valid and its owner is not authorized | `kubectl auth can-i get /metrics --as=system:serviceaccount:<ns>:<sa>`; bind it to the `metrics-reader` ClusterRole, or set `monitoring.serviceMonitor.prometheusServiceAccount` |
+| `connection refused` | `metrics.bindAddress` is `"0"` | intentional; nothing is served |
+
+Verify the endpoint itself from inside the cluster before blaming the scraper:
+
+```bash
+kubectl -n <ns> run probe --rm -it --restart=Never --image=curlimages/curl:8.11.1 -- \
+  sh -c 'curl -sk -o /dev/null -w "%{http_code}\n" \
+    -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+    https://<release>-metrics.<ns>.svc:8443/metrics'
+```
+
+`200` means the endpoint is fine and the problem is the scraper's credential.
+
+---
+
 ## Metrics
 
 Twelve `gpucell_*` Prometheus series, every one labelled `{pool, namespace}`

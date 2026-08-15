@@ -3,6 +3,55 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **A join-credential guard.** A pool that had worked and whose bootstrap
+  credential then expired was invisible to both existing guards — `EverReady`
+  defeats the never-worked check, and no Node registering defeats the capacity
+  veto — so every index burned five rebuilds, each a GPU allocation, a 30 GiB
+  clone, a boot and a full join timeout. Two consecutive cells failing with no Node
+  ever registering now stalls with `Progressing=False/BootstrapCredentialSuspect`,
+  naming `spec.bootstrap.joinSecretRef`, and clears on any successful join. (#17)
+- **`status.cells[].reason`** — the machine-readable cause behind a cell's phase.
+  The FSM already computed it and the reconciler was discarding it, leaving prose
+  as the only record of *why* a cell failed. Preserved on a tombstone, because the
+  row outlives the guest precisely to carry that memory forward. **This is a new
+  CRD field: `helm upgrade` will not install it** (`docs/upgrading.md`).
+- **The metrics endpoint authenticates and authorizes.** A bearer token is now
+  required, and its owner must be allowed to `get /metrics`: a TokenReview followed
+  by a SubjectAccessReview, done with `client-go` rather than controller-runtime's
+  filter, which measured at +249 compiled packages (+30%). Allows are cached for
+  two minutes keyed on token and path; denials are never cached. (#11)
+- **`GPUCellPoolMetricsUnscrapable`**, the one alert not written over `gpucell_*`.
+
+### Fixed
+
+- **The observability pack went dark the moment the metrics endpoint grew
+  authentication.** The ServiceMonitor sent no credential, so scrapes returned
+  `401`, every `gpucell_*` series vanished, and — because all eight existing alerts
+  are expressed over those series — *not one of them could fire*. An empty
+  dashboard and total silence is indistinguishable from a healthy fleet. Measured
+  against a live Prometheus: `health: down`, `401 Unauthorized`, eight alerts
+  silent. The ServiceMonitor now sends Prometheus's own projected ServiceAccount
+  token, the chart can bind that ServiceAccount to the `metrics-reader` ClusterRole
+  (`monitoring.serviceMonitor.prometheusServiceAccount`), and the new
+  `GPUCellPoolMetricsUnscrapable` alert is written over Prometheus's `up` so this
+  class of failure can never again be silent.
+
+### Upgrading
+
+Two things need attention, neither automatic:
+
+- **Apply the CRD.** `status.cells[].reason` is new, and Helm does not update
+  `crds/`. The manager names the dropped field at startup if you skip it.
+- **Check your scraper.** If you scrape the metrics endpoint, it now needs a token
+  whose owner may `get /metrics`. kube-prometheus-stack's Prometheus already holds
+  that right; verify with
+  `kubectl auth can-i get /metrics --as=system:serviceaccount:<ns>:<sa>`.
+  `docs/observability.md` covers the `401` vs `403` distinction.
+
 ## [v0.1.1] — 2026-08-09
 
 ### Added

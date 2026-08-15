@@ -60,6 +60,24 @@ monitoring:
     # Extra labels for Prometheus instances that select ServiceMonitors by label
     # (e.g. release: kube-prometheus-stack).
     additionalLabels: {}
+    # Where Prometheus reads the token it presents to the metrics endpoint, which
+    # metrics.secure requires. Its own projected ServiceAccount token by default.
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    # Authenticated is not authorized: a valid token whose owner holds nothing gets
+    # 403 (measured — no token 401, unprivileged token 403). Many Prometheus
+    # installs already carry the right, so CHECK before setting this rather than
+    # assuming either way:
+    #
+    #   kubectl auth can-i get /metrics --as=system:serviceaccount:<ns>:<sa>
+    #
+    # kube-prometheus-stack answers yes — its Prometheus ClusterRole grants
+    # nonResourceURLs /metrics. If yours answers no, name the ServiceAccount here
+    # and the chart binds it to the metrics-reader ClusterRole.
+    #   e.g. name: <release>-kube-prometheus-prometheus
+    #        namespace: <the namespace Prometheus runs in>
+    prometheusServiceAccount:
+      name: ""
+      namespace: ""
   # Grafana dashboards as sidecar-discovered ConfigMaps.
   dashboards:
     enabled: true
