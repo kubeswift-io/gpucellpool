@@ -24,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/kubeswift-io/gpucellpool/internal/metricsauth"
+
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 	"github.com/kubeswift-io/gpucellpool/internal/controller"
 	"github.com/kubeswift-io/gpucellpool/internal/crdcheck"
@@ -57,14 +59,8 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress:   metricsAddr,
-			SecureServing: secureMetrics,
-			TLSOpts: []func(*tls.Config){func(c *tls.Config) {
-				c.MinVersion = tls.VersionTLS12
-			}},
-		},
+		Scheme:                 scheme,
+		Metrics:                metricsOptions(metricsAddr, secureMetrics),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "gpucellpool.cells.kubeswift.io",
@@ -153,4 +149,33 @@ func reportCRDDrift(ctx context.Context, cfg *rest.Config) error {
 		}
 	}
 	return nil
+}
+
+// metricsOptions builds the metrics server config.
+//
+// When serving over HTTPS the endpoint requires a bearer token whose owner is
+// authorized for the path (#11). Before this it served the series to anything
+// that could reach the port. The filter is client-go only — see
+// internal/metricsauth for why not controller-runtime's, and what that costs.
+//
+// Authentication is tied to secure serving deliberately: over plain HTTP the
+// bearer token crosses the wire in clear, so demanding one would teach
+// operators to send credentials unprotected. Insecure metrics stay
+// unauthenticated and the caller is told so at startup.
+func metricsOptions(addr string, secure bool) metricsserver.Options {
+	o := metricsserver.Options{
+		BindAddress:   addr,
+		SecureServing: secure,
+		TLSOpts: []func(*tls.Config){func(c *tls.Config) {
+			c.MinVersion = tls.VersionTLS12
+		}},
+	}
+	if secure {
+		o.FilterProvider = metricsauth.NewFilterProvider()
+	} else if addr != "0" && addr != "" {
+		setupLog.Info("metrics are served WITHOUT authentication because --metrics-secure=false; "+
+			"anything able to reach this port can read the series",
+			"bindAddress", addr)
+	}
+	return o
 }

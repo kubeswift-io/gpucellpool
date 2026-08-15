@@ -35,11 +35,17 @@ webhook:
 metrics:
   # 0 disables the metrics endpoint.
   bindAddress: ":8443"
-  # secure serves over HTTPS with a self-signed certificate. It does NOT
-  # authenticate or authorize scrapers: anything able to reach the pod on this
-  # port can read the series, which carry pool and namespace names and capacity
-  # figures — no credentials, no guest data. Restrict it with a NetworkPolicy if
-  # that matters to you, or set bindAddress to "0" to serve nothing.
+  # secure serves over HTTPS with a self-signed certificate AND requires a bearer
+  # token whose owner is authorized to GET this path: a TokenReview followed by a
+  # SubjectAccessReview, the same two checks controller-runtime's filter makes,
+  # done with client-go so the operator does not grow a k8s.io/apiserver
+  # dependency for it (measured at +249 compiled packages, a 30% increase).
+  #
+  # Grant a scraper access by binding it to the metrics-reader ClusterRole this
+  # chart ships. The ServiceMonitor template carries the exact command.
+  #
+  # false serves plain HTTP with NO authentication: a bearer token over cleartext
+  # would be worse than none. Use bindAddress "0" to serve nothing at all.
   secure: true
 
 # Prometheus Operator integration and Grafana dashboards. Off by default: on it
