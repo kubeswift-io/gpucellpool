@@ -57,3 +57,21 @@ subjects:
     name: {{ include "gpucellpool.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+---
+# The role a metrics scraper binds to (#11). Non-resource URLs only: it grants
+# nothing in the API, just the right to GET the manager's metrics paths.
+#
+# Shipped unbound on purpose. Binding it names a specific ServiceAccount in a
+# namespace this chart does not know, and silently granting an unnamed principal
+# read access would recreate the hole this closes.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-metrics-reader
+  labels:
+    {{- include "gpucellpool.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
