@@ -154,7 +154,14 @@ func TestTimeouts(t *testing.T) {
 		elapsed time.Duration
 		want    string
 	}{
-		{"join timeout", func(o *Observation) { o.Node = workload.NodeState{} },
+		// The two join timeouts are distinguished on purpose (#17). A Node that
+		// REGISTERED proves the bootstrap credential was accepted, so the fault is
+		// downstream; a Node that never appeared is the only one of the two that is
+		// evidence about the credential, and only it feeds the suspect guard.
+		{"join timeout, node never registered", func(o *Observation) { o.Node = workload.NodeState{} },
+			cellsv1alpha1.CellPhaseJoining, 16 * time.Minute, cellsv1alpha1.ReasonNodeNeverRegistered},
+		{"join timeout, node registered but never Ready",
+			func(o *Observation) { o.Node = workload.NodeState{Exists: true} },
 			cellsv1alpha1.CellPhaseJoining, 16 * time.Minute, cellsv1alpha1.ReasonJoinTimeout},
 		{"gpu never advertised", func(o *Observation) { o.CapacityDevices = 0 },
 			cellsv1alpha1.CellPhaseAwaitingGPUCapacity, 6 * time.Minute, cellsv1alpha1.ReasonGPUNotAdvertised},

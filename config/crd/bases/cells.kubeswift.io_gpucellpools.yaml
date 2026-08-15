@@ -652,6 +652,14 @@ spec:
                         ReadyOnce records that this cell reached Ready at least once, so a later
                         Ready after a regression is not mistaken for a startup.
                       type: boolean
+                    reason:
+                      description: |-
+                        Reason is the machine-readable cause behind Phase, as the cell FSM
+                        computed it. It was previously discarded, leaving Message — prose — as the
+                        only record of WHY a cell failed, which nothing could branch on.
+                        Preserved on a tombstone: the row outlives the guest precisely to carry
+                        this kind of memory forward.
+                      type: string
                     templateHash:
                       description: |-
                         TemplateHash is the cell template this cell was CREATED from. When it differs

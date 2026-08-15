@@ -578,6 +578,14 @@ type CellStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
+	// Reason is the machine-readable cause behind Phase, as the cell FSM
+	// computed it. It was previously discarded, leaving Message — prose — as the
+	// only record of WHY a cell failed, which nothing could branch on.
+	// Preserved on a tombstone: the row outlives the guest precisely to carry
+	// this kind of memory forward.
+	// +optional
+	Reason string `json:"reason,omitempty"`
+
 	// FailureCount is how many times this index has failed; it drives the
 	// replacement backoff and the exhaustion guard.
 	// +optional

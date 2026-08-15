@@ -131,12 +131,18 @@ func AdvanceCell(obs Observation) Decision {
 		}
 
 	case !obs.Node.Exists || !obs.Node.Ready:
+		// Two different faults wear the same timeout. If the Node REGISTERED, the
+		// bootstrap credential was accepted and the problem is downstream. If no
+		// Node ever appeared, the credential is one of the few things that can
+		// explain it — so they get different reasons, and only the latter feeds
+		// the suspect-credential guard.
 		msg := "waiting for the workload Node to register"
+		reason := cellsv1alpha1.ReasonNodeNeverRegistered
 		if obs.Node.Exists {
 			msg = "workload Node registered but not Ready"
+			reason = cellsv1alpha1.ReasonJoinTimeout
 		}
-		return expireOr(obs, cellsv1alpha1.CellPhaseJoining, obs.BootstrapTimeout,
-			cellsv1alpha1.ReasonJoinTimeout, msg)
+		return expireOr(obs, cellsv1alpha1.CellPhaseJoining, obs.BootstrapTimeout, reason, msg)
 
 	case !obs.ProviderReady || obs.CapacityDevices < obs.ExpectedDevices:
 		msg := preflightMessage(obs)

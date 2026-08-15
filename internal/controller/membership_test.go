@@ -272,3 +272,112 @@ func TestAllocationsEmptyHelper(t *testing.T) {
 		t.Error("a consumer is not empty")
 	}
 }
+
+// #17. A pool that HAS worked and whose bootstrap credential then expires is
+// invisible to both existing guards: EverReady defeats the hopeless check, and
+// no Node ever registers so the capacity veto (which requires NodeReady) never
+// fires. Without this guard every index burns MaxFailuresPerIndex rebuilds —
+// each a GPU allocation, a root-disk clone, a boot and a full join timeout.
+
+func neverRegistered(index int32) cellsv1alpha1.CellStatus {
+	c := cell(index, cellsv1alpha1.CellPhaseFailed)
+	c.Reason = cellsv1alpha1.ReasonNodeNeverRegistered
+	c.FailureCount = 1
+	return c
+}
+
+func TestPlanStallsWhenNoCellEverRegistersANode(t *testing.T) {
+	in := input(3, neverRegistered(0), neverRegistered(1))
+	in.ProviderUsable = true // the capacity veto must not be what stops this
+	plan := PlanMembership(in)
+
+	if !plan.Stalled || plan.Reason != cellsv1alpha1.ReasonBootstrapCredentialSuspect {
+		t.Fatalf("plan = %+v, want a stall naming the suspect credential", plan)
+	}
+	if len(plan.Create) != 0 {
+		t.Errorf("stalled plan still wants to create %v — that is the GPU boot this guard exists to stop", plan.Create)
+	}
+	// The message has to be actionable: it must name the field an operator edits.
+	if !strings.Contains(plan.Message, "spec.bootstrap.joinSecretRef") {
+		t.Errorf("message does not name the secret to fix: %q", plan.Message)
+	}
+	// And honest about being a heuristic — a blocked route looks identical.
+	if !strings.Contains(plan.Message, "route") {
+		t.Errorf("message claims more certainty than it has: %q", plan.Message)
+	}
+}
+
+// One cell can be unlucky — a slow image pull, a node that rebooted mid-join.
+// Stalling on the first is how a guard ends up firing on a transient.
+func TestPlanStillReplacesAfterASingleUnregisteredFailure(t *testing.T) {
+	in := input(3, neverRegistered(0))
+	in.ProviderUsable = true
+	plan := PlanMembership(in)
+
+	if plan.Stalled && plan.Reason == cellsv1alpha1.ReasonBootstrapCredentialSuspect {
+		t.Fatal("stalled on ONE unregistered failure; a single cell may simply be unlucky")
+	}
+	if len(plan.Create) == 0 {
+		t.Error("a single failure must still be replaced")
+	}
+}
+
+// A Node that registered proves the credential WORKED. Whatever killed the cell
+// afterwards is a different fault, and is #16's business, not this guard's.
+func TestPlanDoesNotSuspectTheCredentialWhenNodesRegistered(t *testing.T) {
+	joined := func(index int32) cellsv1alpha1.CellStatus {
+		c := cell(index, cellsv1alpha1.CellPhaseFailed)
+		c.Reason = cellsv1alpha1.ReasonJoinTimeout // registered, never went Ready
+		c.NodeName = c.Name
+		c.FailureCount = 1
+		return c
+	}
+	in := input(3, joined(0), joined(1))
+	in.ProviderUsable = true
+	plan := PlanMembership(in)
+
+	if plan.Stalled && plan.Reason == cellsv1alpha1.ReasonBootstrapCredentialSuspect {
+		t.Fatalf("blamed the credential for cells whose Nodes registered: %+v", plan)
+	}
+}
+
+// The suspicion must clear the moment anything joins — otherwise a pool that
+// recovered stays stalled on stale evidence.
+func TestPlanClearsSuspicionForACellThatWasEverReady(t *testing.T) {
+	a, b := neverRegistered(0), neverRegistered(1)
+	b.ReadyOnce = true // this one demonstrably joined at some point
+	in := input(3, a, b)
+	in.ProviderUsable = true
+
+	if plan := PlanMembership(in); plan.Stalled &&
+		plan.Reason == cellsv1alpha1.ReasonBootstrapCredentialSuspect {
+		t.Fatalf("a cell that was ever Ready is not evidence against the credential: %+v", plan)
+	}
+}
+
+// The trap this design had to route around: a tombstone clears NodeName, so
+// "no Node ever appeared" and "the Node went away with the cell" become
+// indistinguishable one reconcile later. Reason survives; NodeName does not.
+// If the predicate ever keys on NodeName again, this fails.
+func TestSuspectCountSurvivesTheTombstoneReset(t *testing.T) {
+	tombstone := neverRegistered(0)
+	tombstone.GuestUID = "" // tombstoned
+	tombstone.NodeName = "" // cleared by the reset, as the real path does
+
+	if n := suspectCredentialFailures([]cellsv1alpha1.CellStatus{tombstone}); n != 1 {
+		t.Fatalf("count = %d, want 1: the tombstone must still carry why it failed", n)
+	}
+
+	// The case that actually forces Reason-keying rather than NodeName-keying: a
+	// cell whose Node DID register, then tombstoned. Its NodeName is now empty
+	// too, so anything keying on NodeName counts it as "never registered" and
+	// blames a credential that demonstrably worked.
+	registeredThenTombstoned := cell(1, cellsv1alpha1.CellPhaseFailed)
+	registeredThenTombstoned.Reason = cellsv1alpha1.ReasonJoinTimeout
+	registeredThenTombstoned.GuestUID = ""
+	registeredThenTombstoned.NodeName = ""
+
+	if n := suspectCredentialFailures([]cellsv1alpha1.CellStatus{registeredThenTombstoned}); n != 0 {
+		t.Fatalf("count = %d, want 0: this cell's Node registered — the credential worked", n)
+	}
+}
