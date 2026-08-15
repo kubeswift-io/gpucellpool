@@ -23,6 +23,21 @@ const (
 	// template — not a transient, and retrying it is pure waste.
 	HopelessPoolFailures = 3
 
+	// SuspectCredentialFailures stops creating when this many cells in a row
+	// failed with no Node object EVER appearing.
+	//
+	// Two, because one cell can be unlucky — a slow image pull, a node that
+	// rebooted mid-join — but two in a row with nothing registering is the
+	// credential or the route to the API server, and neither is fixed by burning
+	// another GPU boot. It is deliberately NOT 1.
+	//
+	// This is a heuristic and is documented as one. There is no authoritative
+	// signal available: the join blob is opaque to this operator by design (that
+	// is the point of the Opaque provider), so the only way to test a credential
+	// is to use it. The guard therefore reports SUSPICION, names the secret, and
+	// clears itself the moment any cell joins.
+	SuspectCredentialFailures = 2
+
 	backoffBase = 30 * time.Second
 	backoffCap  = 30 * time.Minute
 )
@@ -225,6 +240,27 @@ func PlanMembership(in MembershipInput) MembershipPlan {
 		return plan
 	}
 
+	// The suspect-credential guard. A pool that HAS worked and whose bootstrap
+	// credential then expires is invisible to both guards above: EverReady defeats
+	// the hopeless check, and no Node ever registers so the capacity veto (which
+	// requires NodeReady) never fires either. Left alone, every index burns
+	// MaxFailuresPerIndex rebuilds — each one a GPU allocation, a root-disk clone,
+	// a boot and a full join timeout — against a credential that cannot work.
+	//
+	// A finite expiry is the ORDINARY end state of a long-lived pool (a kubeadm
+	// bootstrap token defaults to 24h), not an exotic one.
+	if n := suspectCredentialFailures(in.Cells); n >= SuspectCredentialFailures {
+		plan.Stalled = true
+		plan.Reason = cellsv1alpha1.ReasonBootstrapCredentialSuspect
+		plan.Message = itoa(n) + " cells in a row failed with no workload Node ever registering. " +
+			"The bootstrap credential in spec.bootstrap.joinSecretRef is the most likely cause — " +
+			"it may have expired — though a blocked route to the workload API server looks the same " +
+			"from here. This operator cannot validate the credential without using it, so it stops " +
+			"rather than keep spending a GPU boot per attempt. Refresh the join secret; the pool " +
+			"resumes as soon as any cell joins."
+		return plan
+	}
+
 	if !in.WorkloadReachable {
 		plan.Stalled = true
 		plan.Reason = cellsv1alpha1.ReasonUnreachable
@@ -307,6 +343,34 @@ func ShouldReplace(c cellsv1alpha1.CellStatus, now time.Time, providerUsable boo
 // can never wedge itself out of ever creating one.
 func RebuildWouldNotHelp(c cellsv1alpha1.CellStatus, providerUsable bool) bool {
 	return !providerUsable && c.NodeReady && c.CapacityDevices == 0
+}
+
+// suspectCredentialFailures counts failed cells whose workload Node NEVER
+// registered.
+//
+// It counts across indexes, not per index: an expired credential fails every
+// index identically, so a per-index counter would need MaxFailuresPerIndex
+// failures on one index before noticing what two cells already showed.
+//
+// It keys on Reason, not on NodeName being empty, for a specific reason: a
+// tombstone clears NodeName (the Node really is gone), so after one reconcile
+// "no Node ever appeared" and "the Node was deleted with the cell" look
+// identical. Reason survives the tombstone and says which it was.
+//
+// A cell that reached Ready is not evidence about the credential no matter how
+// it died later — the credential demonstrably worked for it.
+func suspectCredentialFailures(cells []cellsv1alpha1.CellStatus) int {
+	n := 0
+	for _, c := range cells {
+		if c.ReadyOnce {
+			continue
+		}
+		if c.Phase == cellsv1alpha1.CellPhaseFailed &&
+			c.Reason == cellsv1alpha1.ReasonNodeNeverRegistered {
+			n++
+		}
+	}
+	return n
 }
 
 func minDuration(a, b time.Duration) time.Duration {

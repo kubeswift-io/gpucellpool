@@ -78,9 +78,15 @@ const (
 
 	// Cell-level failure reasons, surfaced in CellStatus.Message and in
 	// Progressing when they dominate.
-	ReasonCellUnschedulable          = "CellUnschedulable"
-	ReasonCellProvisionTimeout       = "CellProvisionTimeout"
-	ReasonJoinTimeout                = "JoinTimeout"
+	ReasonCellUnschedulable    = "CellUnschedulable"
+	ReasonCellProvisionTimeout = "CellProvisionTimeout"
+	ReasonJoinTimeout          = "JoinTimeout"
+	// ReasonNodeNeverRegistered is a join timeout in which NO Node object ever
+	// appeared, as opposed to one that registered and never went Ready. The
+	// distinction matters: if the Node registered, the bootstrap credential
+	// WORKED and the fault is downstream (kubelet, CNI). Only the never-appeared
+	// case is evidence about the credential — see PlanMembership's suspect guard.
+	ReasonNodeNeverRegistered        = "NodeNeverRegistered"
 	ReasonGPUNotAdvertised           = "GPUNotAdvertised"
 	ReasonNodeNameCollision          = "NodeNameCollision"
 	ReasonBootstrapCredentialSuspect = "BootstrapCredentialSuspect"

@@ -447,6 +447,10 @@ func (r *GPUCellPoolReconciler) discoverCells(
 			prev.NodeName = ""
 			prev.Devices = nil
 			prev.CapacityDevices = 0
+			// Reason is deliberately NOT cleared. NodeName has to go — the Node is
+			// gone — but that erases the only other evidence of WHY this index
+			// failed, and the suspect-credential guard counts across indexes, so it
+			// reads tombstones. The row exists to remember; let it.
 			out = append(out, prev)
 			continue
 		}
@@ -518,6 +522,7 @@ func (r *GPUCellPoolReconciler) cellStatus(
 		Index:              idx,
 		Phase:              dec.Phase,
 		Message:            dec.Message,
+		Reason:             dec.Reason,
 		GuestUID:           outer.UID,
 		TemplateHash:       outer.TemplateHash,
 		HostNode:           outer.HostNode,
