@@ -41,10 +41,17 @@ spec:
       honorLabels: true
       {{- if .Values.metrics.secure }}
       # The manager serves HTTPS with a self-signed certificate, so verification
-      # is skipped. It does not authenticate scrapers — see issue #11 and the
-      # metrics.secure comment in values.yaml.
+      # is skipped.
       scheme: https
       tlsConfig:
         insecureSkipVerify: true
+      # metrics.secure also AUTHENTICATES scrapers (TokenReview then
+      # SubjectAccessReview). A scrape with no credential gets 401, every
+      # gpucell_* series disappears, and — because every other alert in this pack
+      # is written over those series — the pack goes silently dark. Measured
+      # against a live Prometheus, which is how this was found.
+      #
+      # Prometheus presents its own projected ServiceAccount token from this path.
+      bearerTokenFile: {{ $sm.bearerTokenFile | default "/var/run/secrets/kubernetes.io/serviceaccount/token" }}
       {{- end }}
 {{- end }}

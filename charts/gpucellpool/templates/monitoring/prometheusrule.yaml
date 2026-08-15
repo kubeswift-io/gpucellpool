@@ -20,6 +20,31 @@ metadata:
     {{- end }}
 spec:
   groups:
+    # Every other rule in this pack is written over gpucell_* series, so a scrape
+    # that fails takes the whole pack down with it and the result is
+    # indistinguishable from a healthy fleet. This one rule is written over
+    # Prometheus's own `up`, which survives exactly that. It was added after the
+    # metrics endpoint grew authentication and the scraper was left without a
+    # credential: measured on a live Prometheus, target down, 401, eight alerts
+    # silent.
+    - name: gpucellpool.scrape
+      rules:
+        - alert: GPUCellPoolMetricsUnscrapable
+          expr: up{job="{{ include "gpucellpool.fullname" . }}-metrics"} == 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: "gpucellpool metrics have not been scrapable for 10m"
+            description: >-
+              No gpucell_* series are being collected, so every other alert in this
+              pack is silent — including the ones that would tell you a pool is
+              broken. Check the target's error in Prometheus: 401 means the scrape
+              carries no bearer token (monitoring.serviceMonitor.bearerTokenFile),
+              403 means the token is not authorized (bind Prometheus's
+              ServiceAccount to the metrics-reader ClusterRole, or set
+              monitoring.serviceMonitor.prometheusServiceAccount).
+            runbook_url: https://github.com/kubeswift-io/gpucellpool/blob/main/docs/runbook.md
+
     - name: gpucellpool.transport
       rules:
         - alert: GPUCellPoolWorkloadClusterUnreachable

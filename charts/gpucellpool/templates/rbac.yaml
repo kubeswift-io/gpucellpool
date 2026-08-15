@@ -75,3 +75,29 @@ rules:
       - /metrics
     verbs:
       - get
+
+{{- $mon := .Values.monitoring | default dict }}
+{{- $sm := $mon.serviceMonitor | default dict }}
+{{- $sa := $sm.prometheusServiceAccount | default dict }}
+{{- if and $mon.enabled $sa.name $sa.namespace }}
+---
+# Authorizing the scraper is a SEPARATE step from authenticating it: a valid token
+# whose owner holds nothing still gets 403, and the pack is just as dark as with no
+# token at all. Opt-in because the chart cannot know Prometheus's ServiceAccount —
+# but once you name it, leaving the binding as an exercise is how the observability
+# pack ends up shipped broken.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gpucellpool.fullname" . }}-metrics-reader
+  labels:
+    {{- include "gpucellpool.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gpucellpool.fullname" . }}-metrics-reader
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa.name }}
+    namespace: {{ $sa.namespace }}
+{{- end }}

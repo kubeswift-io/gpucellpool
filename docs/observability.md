@@ -83,6 +83,7 @@ conditions are states the operator reports deliberately rather than faults.
 
 | Alert | Fires when | Layer |
 |---|---|---|
+| `GPUCellPoolMetricsUnscrapable` | the scrape has failed for 10m — **every other alert here is silent while it lasts**, which is why this one is written over `up` rather than `gpucell_*` | scrape |
 | `GPUCellPoolWorkloadClusterUnreachable` | unreachable for 10m — every destructive path is frozen meanwhile | transport |
 | `GPUCellPoolCellsNotReady` | short of Ready cells for 30m (a cell takes ~5 min, so this is stuck, not starting) | cells |
 | `GPUCellPoolCellFailed` | a Failed cell persists for 15m — replacement is not fixing it, or the pool has stopped replacing (`Progressing=FaultNotInTheCell`) because the fault is pool-wide | cells |
@@ -107,13 +108,60 @@ Four rows, in the order you would actually read them: pool health, the physical
 layer, the shared-capacity layer, then decisions and reliability. It is templated
 by namespace and pool, so one dashboard covers a fleet.
 
-## A note on the metrics endpoint
+## The metrics endpoint authenticates
 
 `metrics.secure: true` serves HTTPS with a self-signed certificate — which is why
-the ServiceMonitor sets `insecureSkipVerify`. It does **not** authenticate
-scrapers: anything able to reach the pod on that port can read the series. They
-carry pool and namespace names, cell phases and capacity figures — no credentials
-and no guest data — which is why this is tracked as an enhancement
-([#11](https://github.com/kubeswift-io/gpucellpool/issues/11)) rather than a
-defect. Restrict the port with a NetworkPolicy if it matters to you, or set
-`metrics.bindAddress: "0"` to serve nothing at all.
+the ServiceMonitor sets `insecureSkipVerify` — and requires a bearer token whose
+owner is authorized to `get` the `/metrics` path. Measured behaviour:
+
+| Request | Response |
+|---|---|
+| no token | `401` |
+| unparseable or expired token | `401` |
+| valid token, principal not authorized | `403` |
+| valid token, authorized | `200` |
+
+So a scraper needs **two** things, and they fail differently.
+
+**A credential.** The chart's ServiceMonitor sends Prometheus's own projected
+ServiceAccount token (`monitoring.serviceMonitor.bearerTokenFile`). Nothing to do
+unless your Prometheus keeps its token somewhere else.
+
+**Authorization for that credential.** Check rather than assume:
+
+```bash
+kubectl auth can-i get /metrics --as=system:serviceaccount:<ns>:<prometheus-sa>
+```
+
+kube-prometheus-stack answers `yes` — its Prometheus ClusterRole already grants
+`nonResourceURLs: ["/metrics"]`. If yours answers `no`, either bind it to the
+`metrics-reader` ClusterRole this chart ships, or let the chart do it:
+
+```yaml
+monitoring:
+  serviceMonitor:
+    prometheusServiceAccount:
+      name: monitoring-kube-prometheus-prometheus
+      namespace: monitoring
+```
+
+The role is shipped **unbound** because binding it names a ServiceAccount the
+chart cannot know, and silently granting an unnamed principal read access would
+reopen what the authentication closed.
+
+### Why one alert is not written over `gpucell_*`
+
+Every other rule in the pack is expressed over our own series, so a scrape that
+fails takes the entire pack down with it — no series, no alerts, and a dashboard
+of empty panels that looks exactly like a fleet with nothing wrong. That is not
+hypothetical: it is what the pack did the first time the endpoint grew
+authentication and the ServiceMonitor was left without a credential.
+
+`GPUCellPoolMetricsUnscrapable` is written over Prometheus's own `up`, which
+survives precisely that failure. If it fires, read the target's error in
+Prometheus: `401` means no credential is reaching the endpoint, `403` means the
+credential is fine and its owner is not authorized.
+
+To serve no metrics at all, set `metrics.bindAddress: "0"`. `metrics.secure:
+false` serves plain HTTP with **no** authentication — a bearer token over
+cleartext would be worse than none — and is for local debugging only.
