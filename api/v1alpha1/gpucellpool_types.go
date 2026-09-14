@@ -833,7 +833,3 @@ type GPUCellPoolList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []GPUCellPool `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&GPUCellPool{}, &GPUCellPoolList{})
-}
