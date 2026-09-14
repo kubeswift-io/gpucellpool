@@ -1,0 +1,54 @@
+name: OSV-Scanner
+
+# Known vulnerabilities in our dependencies, from osv.dev.
+#
+# Two jobs, because the two questions are different:
+#
+#   pull_request   "does THIS change add a vulnerability?" Scans the base branch
+#                  and the PR head and fails only on what is new, so a finding
+#                  already on main does not turn every unrelated PR red.
+#
+#   push / weekly  "what is main exposed to right now?" A full scan, published to
+#                  the Security tab as code-scanning alerts. It does not fail:
+#                  existing findings are tracked there and fixed by Dependabot
+#                  (.github/dependabot.yml), and a job that is red every week
+#                  stops being read. The weekly run matters on its own — an
+#                  advisory published today applies to code nobody touched.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-pr:
+    if: github.event_name == 'pull_request'
+    # Pinned to a commit. Dependabot moves this pin (the github-actions entry
+    # groups both OSV workflows so they cannot drift apart).
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      # A pull request from a fork gets a read-only token, so the SARIF upload
+      # would fail and take the job with it. The pass/fail verdict does not need
+      # the upload; only same-repo PRs publish it.
+      upload-sarif: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+
+  scan-main:
+    if: github.event_name != 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      fail-on-vuln: false
