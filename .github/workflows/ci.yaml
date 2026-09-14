@@ -53,7 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Lint and render
         run: |
           helm lint charts/gpucellpool
