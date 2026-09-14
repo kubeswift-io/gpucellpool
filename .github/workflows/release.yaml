@@ -60,6 +60,16 @@ jobs:
           cache-to: type=gha,mode=max
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin the cosign BINARY, not just the installer. Unpinned, installer v4
+          # installs cosign 3.x, which moved where a signature lands: 2.x writes a
+          # `sha256-<digest>.sig` tag, 3.x writes `sha256-<digest>` with no
+          # suffix. Every release so far is signed the 2.x way, and anything that
+          # finds a signature by tag name would silently stop finding one. Same
+          # pin, same reason, as the KubeSwift release workflow — one cosign
+          # version across the project. Moving to 3.x is a deliberate change with
+          # a release note, not a side effect of an installer bump.
+          cosign-release: 'v2.6.5'
 
       - name: Sign the image
         run: cosign sign --yes ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
