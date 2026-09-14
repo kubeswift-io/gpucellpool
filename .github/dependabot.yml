@@ -1,0 +1,49 @@
+version: 2
+
+# Dependabot proposes upgrades; OSV-Scanner (.github/workflows/osv-scanner.yaml)
+# says when we are exposed. Neither is much use without the other.
+#
+# Weekly, grouped and capped, on purpose: a stream of ungrouped dependency PRs gets
+# merged without being read, which is the habit a supply-chain attack relies on.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
+    # Indirect dependencies too. Dependabot's gomod default is `direct` only, and
+    # on the day this file was added every OSV finding on main was indirect —
+    # golang.org/x/net, x/sys and x/text, all pulled in by client-go. With the
+    # default, nothing would ever have proposed those fixes.
+    allow:
+      - dependency-type: all
+    groups:
+      # The Kubernetes libraries move in lockstep and do not build apart.
+      kubernetes:
+        patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      # The catch-all EXCLUDES the patterns above rather than relying on group
+      # order. A group with no `patterns` matches everything, and which group
+      # claims a dependency first is not something we can verify from here —
+      # the sibling KubeSwift repo had a kubernetes group that never produced a
+      # single PR because its catch-all kept winning.
+      go-minor-patch:
+        exclude-patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
+    groups:
+      # The two OSV-Scanner reusable workflows are one tool at one commit, but
+      # they are different action paths and Dependabot treats sub-paths as
+      # separate dependencies. Ungrouped they arrive as separate PRs that leave
+      # the pair at different versions.
+      osv-scanner:
+        patterns: ["google/osv-scanner-action*"]
+        update-types: [major, minor, patch]
+
+  # The manager image's builder and runtime base.
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
