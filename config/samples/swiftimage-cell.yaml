@@ -2,15 +2,16 @@
 #
 # This is the exact image the project's own hardware validation ran on, published as a
 # public OCI artifact. No pull secret is needed. Apply it, wait for Ready (it pulls
-# ~11 GiB and expands to a 30 GiB raw disk, so allow a few minutes), then reference it
-# from your pool's guestTemplate as `imageRef: {name: gpu-worker-noble}`.
+# ~6 GiB into a 12 GiB raw disk, so allow a few minutes), then reference it from your
+# pool's guestTemplate as `imageRef: {name: gpu-worker-noble}`.
 #
 # It is a REFERENCE image, not a universal one. Two things pin it, and either can make
 # it the wrong choice for you:
 #
-#   * Driver 580.173.02, the PROPRIETARY branch, chosen for a Pascal card (GTX 1080).
-#     The open kernel modules are Turing and newer only. On newer hardware you may
-#     prefer -open, which means baking your own.
+#   * Driver 580.173.02, the PROPRIETARY branch, chosen for a Pascal card (GTX 1080),
+#     COMPUTE libraries only — no OpenGL/Vulkan or video codecs. The open kernel modules
+#     are Turing and newer only. For graphics workloads or newer hardware, bake your own
+#     (NVIDIA_FLAVOUR=full, or a later NVIDIA_BRANCH).
 #   * The node binaries are k0s. If your workload cluster is kubeadm, RKE2 or k3s, this
 #     image has the driver and container toolkit you need but not your node binaries —
 #     either install them from the join cloud-init (slower first boot, no rebake) or
@@ -29,13 +30,15 @@ spec:
   # raw, which fails at boot with a refcount error rather than at import.
   format: raw
   osType: linux
+  # copy, not snapshot: on Longhorn a snapshot clone restores by copying and measured
+  # slower. Try snapshot only on a storage driver that clones by reference — see
+  # docs/cell-image.md, "Why cell startup is mostly a disk copy".
   cloneStrategy: copy
   rootDisk:
-    # Must be at least the baked disk size. The clone is most of a cell's startup time
-    # (measured: ~3 minutes of 4m45s), so a smaller image is the cheapest latency win
-    # available if you bake your own.
-    size: 30Gi
+    # At least the baked disk size (12 GiB). This is NOT the cell's disk size: cells
+    # get theirs from the SwiftGuestClass rootDisk, and grow to it at first boot.
+    size: 12Gi
   source:
     oci:
       repository: ghcr.io/kubeswift-io/gpucellpool/images
-      tag: gpu-worker-noble-580-v2
+      tag: gpu-worker-noble-580-v3
