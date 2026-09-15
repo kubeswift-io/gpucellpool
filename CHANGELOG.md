@@ -26,8 +26,28 @@ All notable changes to this project are documented here. The format follows
   two minutes keyed on token and path; denials are never cached. (#11)
 - **`GPUCellPoolMetricsUnscrapable`**, the one alert not written over `gpucell_*`.
 
+### Changed
+
+- **The reference cell image is half the size, and a cell starts faster.**
+  `hack/build-cell-image.sh` now installs the NVIDIA **compute** driver with
+  Ubuntu's prebuilt kernel module instead of the desktop driver built by DKMS,
+  removes `snapd`, trims freed space before converting the disk, and bakes a 12
+  GiB disk instead of 30. The image's data went from 5.69 to 2.85 GiB, the
+  published artifact from 11 to 6 GiB, and each cell's root-disk clone from 176 s
+  to 109 s — 76 s with a KubeSwift that imports sparsely
+  ([kubeswift-io/kubeswift#599](https://github.com/kubeswift-io/kubeswift/pull/599)).
+  A cell's disk size still comes from its `SwiftGuestClass`; cloud-init grows it at
+  first boot. Workloads that need OpenGL, Vulkan or NVENC/NVDEC need
+  `NVIDIA_FLAVOUR=full`. The published reference image is
+  `gpu-worker-noble-580-v3`. (#8)
+
 ### Fixed
 
+- **The cell's GPU preflight never recorded a count.** systemd expands `${VAR}`
+  in `ExecStart` itself, before bash runs, so `/run/gpu-cell-preflight` — the file
+  the runbook points at when a cell has no GPU — always read
+  `gpu-cell preflight:  GPU(s)`. Escaped, it records the number. Present in every
+  image built before this change.
 - **The observability pack went dark the moment the metrics endpoint grew
   authentication.** The ServiceMonitor sent no credential, so scrapes returned
   `401`, every `gpucell_*` series vanished, and — because all eight existing alerts
