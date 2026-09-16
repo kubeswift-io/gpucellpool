@@ -293,7 +293,8 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		if cells[i].Phase != cellsv1alpha1.CellPhaseDraining {
 			continue
 		}
-		if err := r.progressDrain(ctx, &pool, prov, provider, inner, &cells[i], false); err != nil {
+		if err := r.progressDrain(ctx, &pool, prov, provider, inner, &cells[i], false,
+			transitionOr(cells[i].LastTransitionTime, r.now())); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -655,10 +656,21 @@ func (r *GPUCellPoolReconciler) ensureBootstrapSecret(
 
 // progressDrain cordons a draining cell, waits for its GPU to be released, then
 // removes it. poolDeleting relaxes the wait to a bounded one (see AdvanceDrain).
+//
+// drainingSince is the start of the drain window, and the caller must supply it
+// because the two callers measure it differently: a scale-down reads the cell's
+// own transition into Draining, while a pool deletion measures from the deletion
+// request. Deriving it here from cell.LastTransitionTime was WRONG for deletion:
+// that timestamp is when the cell last CHANGED PHASE, so a cell that had been
+// Ready for longer than drainTimeout was already "expired" on the first
+// reconcile after the pool was deleted, and deletion.policy: Drain tore it down
+// under a live allocation — indistinguishable from Force. Measured on hardware:
+// a cell Ready for 209s with drainTimeout 1m lost its GPU 6s after the delete,
+// with a HAMi workload still holding it.
 func (r *GPUCellPoolReconciler) progressDrain(
 	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, prov provisioner.Provisioner,
 	provider capacity.Provider, inner kubernetes.Interface,
-	cell *cellsv1alpha1.CellStatus, poolDeleting bool,
+	cell *cellsv1alpha1.CellStatus, poolDeleting bool, drainingSince time.Time,
 ) error {
 	var (
 		allocs      capacity.Allocations
@@ -677,8 +689,12 @@ func (r *GPUCellPoolReconciler) progressDrain(
 
 	dec := AdvanceDrain(allocs, allocsKnown, poolDeleting,
 		deletionPolicy(pool) == cellsv1alpha1.DeletionPolicyForce,
-		transitionOr(cell.LastTransitionTime, r.now()), r.now(), drainTimeout(pool))
+		drainingSince, r.now(), drainTimeout(pool))
 
+	// Both, not just the message: the Reason is the machine-readable half, and
+	// WaitingForAllocations / DrainTimedOut were computed and then dropped, so a
+	// drain that gave up looked exactly like one that found nothing to wait for.
+	cell.Reason = dec.Reason
 	cell.Message = dec.Message
 	if !dec.Proceed {
 		return nil
@@ -733,6 +749,11 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 		return ctrl.Result{}, err
 	}
 	if len(guests) > 0 {
+		// The drain window runs from the DELETION REQUEST, not from whenever the
+		// cell last changed phase. See progressDrain.
+		since := transitionOr(pool.DeletionTimestamp, r.now())
+
+		rows := make([]cellsv1alpha1.CellStatus, 0, len(guests))
 		for _, name := range guests {
 			idx, err := cellid.ParseIndex(pool.Name, name)
 			if err != nil {
@@ -744,10 +765,22 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 					cell = c
 				}
 			}
-			if err := r.progressDrain(ctx, pool, prov, provider, inner, &cell, true); err != nil {
+			if cell.Phase != cellsv1alpha1.CellPhaseDraining {
+				cell.Phase = cellsv1alpha1.CellPhaseDraining
+				now := metav1.NewTime(r.now())
+				cell.LastTransitionTime = &now
+			}
+			if err := r.progressDrain(ctx, pool, prov, provider, inner, &cell, true, since); err != nil {
 				return ctrl.Result{}, err
 			}
+			rows = append(rows, cell)
 		}
+
+		// Persist what the drain decided. Without this the rows sat at their last
+		// pre-deletion phase (typically Ready, with no message), so a pool that was
+		// waiting on a workload, and one that had already given up and taken the
+		// GPU, looked identical from outside — and neither emitted an event.
+		r.writeDrainStatus(ctx, pool, rows)
 		return ctrl.Result{RequeueAfter: requeueProgressing}, nil
 	}
 
@@ -759,6 +792,25 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 	r.Clients.Forget(clientKey(pool))
 	poolmetrics.ForgetPool(pool.Namespace, pool.Name)
 	return ctrl.Result{}, nil
+}
+
+// writeDrainStatus publishes the drain rows of a pool that is being deleted.
+//
+// Best-effort on purpose: the pool is terminating, so losing a status write to a
+// conflict costs an operator one reconcile of visibility and nothing else. It
+// must never fail the teardown.
+func (r *GPUCellPoolReconciler) writeDrainStatus(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool, rows []cellsv1alpha1.CellStatus,
+) {
+	pool.Status.Cells = rows
+	pool.Status.Replicas = int32(len(rows))
+	pool.Status.ReadyCells = 0
+	pool.Status.CreatingCells = 0
+	pool.Status.DrainingCells = int32(len(rows))
+	if err := r.Status().Update(ctx, pool); err != nil {
+		logf.FromContext(ctx).V(1).Info("could not publish drain status while deleting the pool",
+			"err", err.Error())
+	}
 }
 
 func (r *GPUCellPoolReconciler) writeStatus(

@@ -495,6 +495,68 @@ func TestPoolDeletionTearsDownCells(t *testing.T) {
 	}
 }
 
+// The drain window on pool deletion runs from the DELETE, not from whenever the
+// cell last changed phase.
+//
+// Before the fix the clock was cell.LastTransitionTime, which for a healthy cell
+// is when it went Ready and never moves again. Any cell that had been Ready for
+// longer than drainTimeout was therefore already expired on the first reconcile
+// after the delete, so deletion.policy: Drain took the GPU out from under a live
+// workload immediately — silently, since the deletion path also published no
+// status. Reproduced on hardware: a cell Ready for 209s with drainTimeout 1m lost
+// its GPU 6s after the delete while a HAMi pod still held it.
+func TestPoolDeletionDrainWindowRunsFromTheDeleteNotTheLastPhaseChange(t *testing.T) {
+	f := newFixture(t, func(p *cellsv1alpha1.GPUCellPool) {
+		p.Spec.Replicas = 1
+		p.Spec.Deletion = &cellsv1alpha1.DeletionSpec{
+			Policy:       cellsv1alpha1.DeletionPolicyDrain,
+			DrainTimeout: &metav1.Duration{Duration: 10 * time.Minute},
+		}
+	})
+	f.reconcile()
+	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
+	f.joinNode("cells-0", f.guestUID("cells-0"), true)
+	f.reconcile()
+
+	// A workload holds the cell's GPU.
+	f.gpuPod("holder", "cells-0")
+
+	// The cell has been Ready far longer than drainTimeout — the steady state for
+	// any pool that has been up for a while.
+	pool := f.getPool()
+	old := metav1.NewTime(f.now.Add(-1 * time.Hour))
+	pool.Status.Cells[0].LastTransitionTime = &old
+	if err := outerClient.Status().Update(context.Background(), pool); err != nil {
+		t.Fatalf("age the cell: %v", err)
+	}
+
+	if err := outerClient.Delete(context.Background(), f.getPool()); err != nil {
+		t.Fatalf("delete pool: %v", err)
+	}
+
+	f.reconcile()
+	if len(f.guests()) != 1 || f.guests()[0].GetDeletionTimestamp() != nil {
+		t.Fatal("cell torn down immediately on pool deletion while a workload held its GPU")
+	}
+
+	// The wait is also observable, which it was not before: the row kept saying
+	// Ready with no message for the whole teardown.
+	pool = f.getPool()
+	if len(pool.Status.Cells) != 1 ||
+		pool.Status.Cells[0].Phase != cellsv1alpha1.CellPhaseDraining ||
+		pool.Status.Cells[0].Reason != cellsv1alpha1.ReasonWaitingForAllocations {
+		t.Errorf("drain state not published: %+v", pool.Status.Cells)
+	}
+
+	// Past the window, the pool deletion still wins — a pool stuck draining
+	// forever is worse than a rough teardown.
+	f.now = f.now.Add(11 * time.Minute)
+	f.reconcile()
+	if guests := f.guests(); len(guests) == 1 && guests[0].GetDeletionTimestamp() == nil {
+		t.Error("drain did not time out after drainTimeout elapsed from the delete")
+	}
+}
+
 func TestNoFreeGPUStallsInsteadOfQueueingGuests(t *testing.T) {
 	// Two cells wanted, one GPU published and already claimed: the pool must stop
 	// rather than create a guest that could never be scheduled.
