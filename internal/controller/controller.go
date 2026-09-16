@@ -578,9 +578,15 @@ func (r *GPUCellPoolReconciler) cellStatus(
 				Observe(r.now().Sub(outer.CreatedAt.Time).Seconds())
 		}
 	}
-	if dec.Phase == cellsv1alpha1.CellPhaseReady {
-		c.ReadyOnce = true
-	}
+	// A latch, as the field is documented and as both its readers assume: "this
+	// cell reached Ready at least once", not "this cell is Ready now". Setting it
+	// only from the current decision made it a mirror — it cleared the moment a
+	// cell left Ready — which defeated the startup-metric guard just above (a cell
+	// that blips and returns records a second "startup", measured from the guest's
+	// creation, so a day-old cell contributes a ~24h observation) and made
+	// suspectCredentialFailures' skip unreachable, since a row in Failed could
+	// never carry it.
+	c.ReadyOnce = prev.ReadyOnce || dec.Phase == cellsv1alpha1.CellPhaseReady
 	return c
 }
 

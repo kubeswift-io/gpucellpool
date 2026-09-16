@@ -10,6 +10,7 @@ import (
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
 	"github.com/kubeswift-io/gpucellpool/internal/capacity"
+	"github.com/kubeswift-io/gpucellpool/internal/provisioner"
 )
 
 func TestCountCells(t *testing.T) {
@@ -280,5 +281,54 @@ func TestAnEmptyPoolByDesignIsNotBroken(t *testing.T) {
 	if cap0 == nil || cap0.Status != metav1.ConditionFalse ||
 		cap0.Reason != cellsv1alpha1.ReasonScaledToZero {
 		t.Errorf("CapacityAvailable = %+v, want False/ScaledToZero", cap0)
+	}
+}
+
+// readyOnce is a latch, which is what the API documents and what both its
+// readers assume.
+//
+// It used to be set only from the current decision, so it cleared the moment a
+// cell left Ready — a mirror of "is Ready now". That defeated the two things
+// built on it: the startup metric guard (`!prev.ReadyOnce`) admitted a second
+// observation after any regression, measured from the guest's creation, so a
+// day-old cell that blipped contributed a ~24h "startup"; and
+// suspectCredentialFailures' skip was unreachable, because a row in Failed could
+// never carry the flag it tests.
+func TestReadyOnceIsALatchAcrossARegression(t *testing.T) {
+	now := time.Now()
+	r := &GPUCellPoolReconciler{Clock: func() time.Time { return now }}
+	outer := provisioner.OuterState{UID: "uid-1", Exists: true, Provisioned: true}
+
+	ready := r.cellStatus(cellsv1alpha1.CellStatus{Name: "p-0", Index: 0},
+		"p", "ns", "p-0", 0, outer, Observation{},
+		Decision{Phase: cellsv1alpha1.CellPhaseReady})
+	if !ready.ReadyOnce {
+		t.Fatal("readyOnce not set when the cell reached Ready")
+	}
+
+	// HAMi's device plugin restarting is enough to drop a healthy cell back here.
+	regressed := r.cellStatus(ready, "p", "ns", "p-0", 0, outer, Observation{},
+		Decision{Phase: cellsv1alpha1.CellPhaseAwaitingGPUCapacity,
+			Reason: cellsv1alpha1.ReasonGPUNotAdvertised, Message: "plugin restarting"})
+	if !regressed.ReadyOnce {
+		t.Error("readyOnce cleared by a regression; it records that the cell ever joined")
+	}
+
+	failed := r.cellStatus(regressed, "p", "ns", "p-0", 0, outer, Observation{},
+		Decision{Phase: cellsv1alpha1.CellPhaseFailed,
+			Reason: cellsv1alpha1.ReasonNodeNeverRegistered, Message: "gone"})
+	if !failed.ReadyOnce {
+		t.Error("readyOnce cleared by a failure")
+	}
+
+	// Which is what makes the suspect-credential skip mean anything: a cell that
+	// demonstrably joined is not evidence against the join credential.
+	if n := suspectCredentialFailures([]cellsv1alpha1.CellStatus{failed}); n != 0 {
+		t.Errorf("a formerly-Ready cell counted as credential evidence: %d", n)
+	}
+	fresh := failed
+	fresh.ReadyOnce = false // a replacement starts a new incarnation
+	if n := suspectCredentialFailures([]cellsv1alpha1.CellStatus{fresh}); n != 1 {
+		t.Errorf("a cell that never joined was not counted: %d", n)
 	}
 }

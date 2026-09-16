@@ -67,6 +67,15 @@ All notable changes to this project are documented here. The format follows
   nor message now means "nothing new" rather than "no cause", and a cell entering
   `Failed` emits one Warning Event carrying its reason, the cell name and the
   attempt number. Measured on hardware across three consecutive failures. (#44)
+- **`status.cells[].reason` survived one reconcile, and `readyOnce` was a mirror
+  of "Ready now" rather than the latch it is documented to be.** Two readers
+  depend on the latch: the startup metric admitted a second observation after any
+  regression — measured from the guest's creation, so a day-old cell whose GPU
+  briefly stopped being advertised contributed a ~24h "startup" — and the
+  join-credential guard's "a cell that demonstrably joined is not evidence against
+  the credential" skip could never apply, because a row in `Failed` could not
+  carry a flag that cleared on leaving `Ready`. It latches per incarnation; a
+  replacement still starts fresh. (#43)
 - **The cell's GPU preflight never recorded a count.** systemd expands `${VAR}`
   in `ExecStart` itself, before bash runs, so `/run/gpu-cell-preflight` — the file
   the runbook points at when a cell has no GPU — always read
