@@ -43,6 +43,30 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- **`deletion.policy: Drain` behaved like `Force` for any cell older than
+  `drainTimeout`** — which is every cell in a steady-state pool. The drain clock
+  was the cell's last *phase change*, and a healthy cell's last phase change is
+  when it went Ready, so on the first reconcile after the pool was deleted the
+  window was already spent. Measured on hardware: a cell Ready for 209 s with
+  `drainTimeout: 1m` lost its GPU 6 s after the delete, with a HAMi pod still
+  holding it — left `Running` on a Node that no longer existed. The window now
+  runs from the deletion request. The deletion path also published nothing at all
+  (it never wrote status, and the drain only ever set a message, never a reason),
+  so a pool waiting on a workload and one that had given up and taken the GPU
+  looked identical; both now report `Draining` with `WaitingForAllocations`,
+  `DrainTimedOut` or `CellDraining`. The scale-down drain path was correct
+  throughout. (#41, #6)
+- **A failed cell erased the reason it failed for, and no Event recorded it.**
+  The reason survived one reconcile: the status write woke the reconciler, and the
+  terminal-Failed branch returns a bare phase whose empty reason overwrote it. An
+  operator debugging a refused join credential saw `phase: Failed` with no reason,
+  no message, and nothing in the Event stream but "creating cell" — while the pool
+  spent a GPU boot and a root-disk clone every few minutes. It also left the
+  join-credential guard added in #17 unable to fire, because the reason it keys on
+  no longer existed by the time it looked. A decision that restates neither reason
+  nor message now means "nothing new" rather than "no cause", and a cell entering
+  `Failed` emits one Warning Event carrying its reason, the cell name and the
+  attempt number. Measured on hardware across three consecutive failures. (#44)
 - **The cell's GPU preflight never recorded a count.** systemd expands `${VAR}`
   in `ExecStart` itself, before bash runs, so `/run/gpu-cell-preflight` — the file
   the runbook points at when a cell has no GPU — always read
