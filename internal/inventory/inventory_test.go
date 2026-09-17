@@ -6,6 +6,7 @@ import (
 
 	resourceapi "k8s.io/api/resource/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -123,4 +124,84 @@ func TestFreeGPUs(t *testing.T) {
 			t.Errorf("Free = %d, want 1", got.Free)
 		}
 	})
+}
+
+func gpuNode(name string, vfioReady *bool, allocated ...bool) *unstructured.Unstructured {
+	gpus := make([]any, 0, len(allocated))
+	for i, a := range allocated {
+		gpus = append(gpus, map[string]any{
+			"index":      int64(i),
+			"pciAddress": "0000:0" + string(rune('1'+i)) + ":00.0",
+			"allocated":  a,
+		})
+	}
+	status := map[string]any{"gpus": gpus}
+	if vfioReady != nil {
+		status["vfioReady"] = *vfioReady
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{"status": status}}
+	u.SetGroupVersionKind(SwiftGPUNodeGVK)
+	u.SetName(name)
+	return u
+}
+
+func nativeClient(objs ...client.Object) client.Client {
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(SwiftGPUNodeGVK, &unstructured.Unstructured{})
+	s.AddKnownTypeWithName(SwiftGPUNodeGVK.GroupVersion().WithKind(SwiftGPUNodeGVK.Kind+"List"),
+		&unstructured.UnstructuredList{})
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+}
+
+// The native ledger is the only place a native allocation is recorded, so this
+// is the count a Native pool must gate on. Reading DRA instead reported a held
+// GPU as free and the pool created a cell that could not get a device.
+func TestFreeGPUsNativeCountsTheNativeLedger(t *testing.T) {
+	yes := true
+	c := nativeClient(
+		gpuNode("a", &yes, true, false), // one held, one free
+		gpuNode("b", &yes, false),       // one free
+	)
+	got, err := FreeGPUsNative(context.Background(), c)
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Published != 3 || got.Ready != 3 || got.Allocated != 1 || got.Free != 2 || !got.Known {
+		t.Errorf("counts = %+v, want published 3 ready 3 allocated 1 free 2 known", got)
+	}
+}
+
+func TestFreeGPUsNativeTreatsAWholeNodeWithoutVFIOAsUnusable(t *testing.T) {
+	no := false
+	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", &no, false, false)))
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	// Published, so the reading is KNOWN — and known to be zero free, which is
+	// the point: a device on a node without vfio-pci cannot back a VM.
+	if got.Published != 2 || got.Ready != 0 || got.Free != 0 || !got.Known {
+		t.Errorf("counts = %+v, want 2 published, none ready, known", got)
+	}
+}
+
+func TestFreeGPUsNativeAssumesUsableWhenVFIOIsNotReported(t *testing.T) {
+	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", nil, false)))
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Free != 1 {
+		t.Errorf("free = %d, want 1: an absent field must not invent a fault", got.Free)
+	}
+}
+
+// No SwiftGPUNodes at all is a configuration signal, not "the cluster is full" —
+// the same contract the DRA path has for a driver that publishes nothing.
+func TestFreeGPUsNativeWithNoLedgerIsUnknownNotFull(t *testing.T) {
+	got, err := FreeGPUsNative(context.Background(), nativeClient())
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Known {
+		t.Errorf("counts = %+v, want Known false so the caller treats it as unknown", got)
+	}
 }

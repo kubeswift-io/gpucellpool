@@ -87,7 +87,7 @@ cannot express and is rejected at admission rather than dropped.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `count` | int32, enum `1` | `1` | only 1 GPU per cell in v1alpha1 |
-| `backend` | `DRA \| Native` | `DRA` | which KubeSwift GPU allocation backend |
+| `backend` | `DRA \| Native` | `DRA` | which KubeSwift GPU allocation backend — and therefore which ledger `PhysicalGPUsAvailable` counts (ResourceSlices/Claims for DRA, `SwiftGPUNode` for Native) |
 | `dra` | `*CellGPUDRASpec` | — | required iff `backend: DRA`; forbidden otherwise |
 | `native` | `*CellGPUNativeSpec` | — | required iff `backend: Native`; forbidden otherwise |
 

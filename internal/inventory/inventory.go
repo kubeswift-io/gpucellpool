@@ -10,7 +10,11 @@ import (
 	"fmt"
 
 	resourceapi "k8s.io/api/resource/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -99,6 +103,78 @@ func FreeGPUs(ctx context.Context, c client.Client, driver string) (*Counts, err
 			key := res.Pool + "/" + res.Device
 			if ready[key] && !held[key] {
 				held[key] = true
+				counts.Allocated++
+			}
+		}
+	}
+
+	counts.Free = counts.Ready - counts.Allocated
+	if counts.Free < 0 {
+		counts.Free = 0
+	}
+	counts.Known = counts.Published > 0
+	return counts, nil
+}
+
+// SwiftGPUNodeGVK is the per-node GPU inventory the native SwiftGPU backend
+// allocates from. It is cluster-scoped and owned by KubeSwift's discovery
+// DaemonSet.
+var SwiftGPUNodeGVK = schema.GroupVersionKind{
+	Group:   "gpu.kubeswift.io",
+	Version: "v1alpha1",
+	Kind:    "SwiftGPUNode",
+}
+
+// FreeGPUsNative counts allocatable GPUs from the NATIVE ledger.
+//
+// The two backends keep separate books for the same physical devices, and a
+// pool's spec.cell.gpu.backend decides which one is authoritative for it. A
+// native allocation is recorded on SwiftGPUNode.status.gpus[].allocated and
+// never appears in a ResourceClaim, so counting DRA claims for a Native pool
+// reports held GPUs as free: observed on a single-GPU cluster where the device
+// was held by a native allocation while the pool announced "1 free GPU(s)" and
+// created a cell per bootstrap timeout, each one a root-disk clone and a boot
+// that could never succeed.
+//
+// Same contract as FreeGPUs: (nil, err) never means "full", and a ledger that
+// publishes nothing at all leaves Known false, because a cluster with no GPU
+// discovery installed tells us nothing about capacity. A missing CRD is exactly
+// that case, not an error — the backend may simply not be deployed.
+func FreeGPUsNative(ctx context.Context, c client.Client) (*Counts, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(SwiftGPUNodeGVK.GroupVersion().WithKind(SwiftGPUNodeGVK.Kind + "List"))
+	if err := c.List(ctx, list); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return &Counts{}, nil // no discovery installed: UNKNOWN, not full
+		}
+		return nil, fmt.Errorf("listing %ss: %w", SwiftGPUNodeGVK.Kind, err)
+	}
+
+	counts := &Counts{}
+	for i := range list.Items {
+		node := &list.Items[i]
+		// vfioReady is per node here, not per device (it reports whether the
+		// module is loaded). Absent: assume usable rather than invent a fault,
+		// exactly as the DRA path treats a missing attribute.
+		vfio := true
+		if v, found, err := unstructured.NestedBool(node.Object, "status", "vfioReady"); err == nil && found {
+			vfio = v
+		}
+		gpus, found, err := unstructured.NestedSlice(node.Object, "status", "gpus")
+		if err != nil || !found {
+			continue
+		}
+		for _, raw := range gpus {
+			gpu, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			counts.Published++
+			if !vfio {
+				continue
+			}
+			counts.Ready++
+			if allocated, found, err := unstructured.NestedBool(gpu, "allocated"); err == nil && found && allocated {
 				counts.Allocated++
 			}
 		}

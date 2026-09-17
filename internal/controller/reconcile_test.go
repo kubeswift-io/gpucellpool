@@ -10,9 +10,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
 	cellsv1alpha1 "github.com/kubeswift-io/gpucellpool/api/v1alpha1"
+	"github.com/kubeswift-io/gpucellpool/internal/inventory"
 )
 
 func condition(t *testing.T, pool *cellsv1alpha1.GPUCellPool, typ string) *metav1.Condition {
@@ -618,6 +620,73 @@ func TestAFailedCellKeepsItsDiagnosisAndEmitsAnEvent(t *testing.T) {
 		if strings.Contains(e, cellsv1alpha1.ReasonNodeNeverRegistered) {
 			t.Errorf("failure Event repeated on a later pass: %q", e)
 		}
+	}
+}
+
+// The same guard, for a pool whose GPUs come from the NATIVE backend.
+//
+// The two backends keep separate books for the same physical devices, and the
+// inventory used to read the DRA one regardless. On a single-GPU cluster whose
+// device was held by a native allocation, the pool announced "1 free GPU(s) in
+// the infrastructure cluster" and created a cell per bootstrap timeout — a
+// root-disk clone and a boot each, none of which could ever get a device.
+// The DRA twin of this test could not catch it: a native allocation never
+// appears in a ResourceClaim.
+func TestNoFreeGPUStallsAPoolOnTheNativeBackend(t *testing.T) {
+	f := newFixture(t, func(p *cellsv1alpha1.GPUCellPool) {
+		p.Spec.Cell.GPU = cellsv1alpha1.CellGPUSpec{
+			Count:   1,
+			Backend: cellsv1alpha1.GPUBackendNative,
+			Native: &cellsv1alpha1.CellGPUNativeSpec{
+				GPUProfileRef: corev1.LocalObjectReference{Name: "cell-gpu"},
+			},
+		}
+	})
+
+	// The one GPU in the cluster is held — by anything: another pool, or a
+	// sandbox, which is how this was found. Only the native ledger records it.
+	node := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{
+			"vfioReady": true,
+			"gpus": []any{map[string]any{
+				"index":       int64(0),
+				"pciAddress":  "0000:01:00.0",
+				"allocated":   true,
+				"allocatedTo": "sandbox:other/holder",
+			}},
+		},
+	}}
+	node.SetGroupVersionKind(inventory.SwiftGPUNodeGVK)
+	node.SetName("gpu-node-" + f.ns)
+	if err := outerClient.Create(context.Background(), node); err != nil {
+		t.Fatalf("create SwiftGPUNode: %v", err)
+	}
+	t.Cleanup(func() { _ = outerClient.Delete(context.Background(), node) })
+	// Status is a subresource on the stub CRD, so it needs its own write.
+	node.Object["status"] = map[string]any{
+		"vfioReady": true,
+		"gpus": []any{map[string]any{
+			"index": int64(0), "pciAddress": "0000:01:00.0",
+			"allocated": true, "allocatedTo": "sandbox:other/holder",
+		}},
+	}
+	if err := outerClient.Status().Update(context.Background(), node); err != nil {
+		t.Fatalf("write SwiftGPUNode status: %v", err)
+	}
+
+	f.reconcile()
+
+	if n := len(f.guests()); n != 0 {
+		t.Errorf("created %d guests while the only GPU was natively allocated", n)
+	}
+	pool := f.getPool()
+	c := condition(t, pool, cellsv1alpha1.ConditionPhysicalGPUsAvailable)
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != cellsv1alpha1.ReasonInsufficientGPUs {
+		t.Errorf("PhysicalGPUsAvailable = %+v, want False/InsufficientGPUs", c)
+	}
+	if pool.Status.PhysicalCapacity == nil || pool.Status.PhysicalCapacity.FreeGPUsInCluster == nil ||
+		*pool.Status.PhysicalCapacity.FreeGPUsInCluster != 0 {
+		t.Errorf("physicalCapacity = %+v, want 0 free", pool.Status.PhysicalCapacity)
 	}
 }
 
