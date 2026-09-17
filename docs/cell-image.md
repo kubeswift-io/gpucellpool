@@ -113,7 +113,7 @@ same day:
 |---|---|---|---|
 | first published image (30 GiB disk, `full` driver, no trim) | 5.69 GiB | 12 GiB | 176 s |
 | this build (12 GiB disk, `compute` driver, trimmed) | 2.85 GiB | 5.9 GiB | 109 s |
-| this build, imported sparsely by KubeSwift | 2.85 GiB | 2.9 GiB | 76 s |
+| this build, imported sparsely by KubeSwift (see below) | 2.85 GiB | 2.9 GiB | 76 s |
 
 - **Content.** The `compute` flavour and removing `snapd` take the data from
   5.69 to 2.85 GiB.
@@ -127,8 +127,10 @@ same day:
   allocates far more than the data. A smaller baked disk puts the same data in
   fewer windows — which is why `DISK_SIZE` defaults to 12G — and a KubeSwift
   that writes those zeros as holes
-  ([kubeswift-io/kubeswift#599](https://github.com/kubeswift-io/kubeswift/pull/599))
-  allocates only the data itself.
+  ([kubeswift-io/kubeswift#608](https://github.com/kubeswift-io/kubeswift/pull/608))
+  allocates only the data itself. **That last row needs a KubeSwift release
+  carrying #608**; until then the middle row is what you get — re-measured on a
+  released KubeSwift, the same image's per-cell clone took 2 m 5 s.
 
 The copy itself does not go away: each cell still gets the whole image. Sharing
 one read-only base between cells instead is tracked upstream in

@@ -35,7 +35,8 @@ All notable changes to this project are documented here. The format follows
   GiB disk instead of 30. The image's data went from 5.69 to 2.85 GiB, the
   published artifact from 11 to 6 GiB, and each cell's root-disk clone from 176 s
   to 109 s — 76 s with a KubeSwift that imports sparsely
-  ([kubeswift-io/kubeswift#599](https://github.com/kubeswift-io/kubeswift/pull/599)).
+  ([kubeswift-io/kubeswift#608](https://github.com/kubeswift-io/kubeswift/pull/608),
+  not yet in a KubeSwift release).
   A cell's disk size still comes from its `SwiftGuestClass`; cloud-init grows it at
   first boot. Workloads that need OpenGL, Vulkan or NVENC/NVDEC need
   `NVIDIA_FLAVOUR=full`. The published reference image is
