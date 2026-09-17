@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -120,7 +121,22 @@ type testFixture struct {
 	ns         string
 	pool       *cellsv1alpha1.GPUCellPool
 	reconciler *GPUCellPoolReconciler
+	recorder   *events.FakeRecorder
 	now        time.Time
+}
+
+// events drains what the reconciler has recorded so far.
+func (f *testFixture) events() []string {
+	f.t.Helper()
+	var out []string
+	for {
+		select {
+		case e := <-f.recorder.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
 }
 
 func newFixture(t *testing.T, mutate func(*cellsv1alpha1.GPUCellPool)) *testFixture {
@@ -172,11 +188,13 @@ func newFixture(t *testing.T, mutate func(*cellsv1alpha1.GPUCellPool)) *testFixt
 	utilMust(outerClient.Create(ctx, pool))
 
 	f := &testFixture{t: t, ns: ns, pool: pool, now: time.Now()}
+	f.recorder = events.NewFakeRecorder(64)
 	f.reconciler = &GPUCellPoolReconciler{
-		Client:  outerClient,
-		Scheme:  testScheme,
-		Clients: workload.NewClientCache(),
-		Clock:   func() time.Time { return f.now },
+		Client:   outerClient,
+		Scheme:   testScheme,
+		Clients:  workload.NewClientCache(),
+		Clock:    func() time.Time { return f.now },
+		Recorder: f.recorder,
 	}
 	t.Cleanup(func() { f.cleanup() })
 	return f

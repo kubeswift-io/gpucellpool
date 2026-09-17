@@ -557,6 +557,70 @@ func TestPoolDeletionDrainWindowRunsFromTheDeleteNotTheLastPhaseChange(t *testin
 	}
 }
 
+// A cell that fails keeps the reason it failed for, and says so once.
+//
+// The reason used to survive a single reconcile: cellStatus wrote it, that write
+// woke the reconciler, and AdvanceCell's terminal-Failed branch returns a bare
+// phase whose empty Reason/Message overwrote it. Measured on hardware — three
+// consecutive cells failing on an expired join credential, every Failed row
+// reading `reason: "" message: ""` at 3-second polling. It also left
+// suspectCredentialFailures, which keys on ReasonNodeNeverRegistered, with
+// nothing to count, and the exhaustion message ending in a bare colon.
+func TestAFailedCellKeepsItsDiagnosisAndEmitsAnEvent(t *testing.T) {
+	f := newFixture(t, func(p *cellsv1alpha1.GPUCellPool) {
+		p.Spec.Bootstrap.ReadyTimeout = &metav1.Duration{Duration: 5 * time.Minute}
+	})
+	f.reconcile()
+	// The VM runs and holds a GPU, but no workload Node ever registers — what a
+	// credential the apiserver refuses looks like from here.
+	f.stampGuestRunning("cells-0", "10.77.0.5", "0000:01:00.0", "boba")
+	f.reconcile()
+	if p := f.getPool(); p.Status.Cells[0].Reason != cellsv1alpha1.ReasonNodeNeverRegistered {
+		t.Fatalf("reason = %q, want NodeNeverRegistered while joining", p.Status.Cells[0].Reason)
+	}
+
+	// Past the bootstrap budget it fails.
+	f.now = f.now.Add(6 * time.Minute)
+	_ = f.events() // drop everything recorded before the failure
+	f.reconcile()
+
+	pool := f.getPool()
+	cell := pool.Status.Cells[0]
+	if cell.Phase != cellsv1alpha1.CellPhaseFailed || cell.FailureCount != 1 {
+		t.Fatalf("cell = %s/%d, want Failed after one failure", cell.Phase, cell.FailureCount)
+	}
+	if cell.Reason != cellsv1alpha1.ReasonNodeNeverRegistered || cell.Message == "" {
+		t.Fatalf("failure not attributed: reason=%q message=%q", cell.Reason, cell.Message)
+	}
+
+	var failure string
+	for _, e := range f.events() {
+		if strings.Contains(e, cellsv1alpha1.ReasonNodeNeverRegistered) {
+			failure = e
+		}
+	}
+	if failure == "" {
+		t.Error("no Event names the failure; a discarded GPU boot left no trace")
+	} else if !strings.Contains(failure, "cells-0") {
+		t.Errorf("failure Event does not name the cell: %q", failure)
+	}
+
+	// The reconcile the status write itself triggers is the one that used to erase
+	// it, so a second pass is the whole point of this test.
+	f.reconcile()
+	f.reconcile()
+	cell = f.getPool().Status.Cells[0]
+	if cell.Reason != cellsv1alpha1.ReasonNodeNeverRegistered || cell.Message == "" {
+		t.Errorf("diagnosis erased after the failure: reason=%q message=%q", cell.Reason, cell.Message)
+	}
+	// And it is not re-announced every pass.
+	for _, e := range f.events() {
+		if strings.Contains(e, cellsv1alpha1.ReasonNodeNeverRegistered) {
+			t.Errorf("failure Event repeated on a later pass: %q", e)
+		}
+	}
+}
+
 func TestNoFreeGPUStallsInsteadOfQueueingGuests(t *testing.T) {
 	// Two cells wanted, one GPU published and already claimed: the pool must stop
 	// rather than create a guest that could never be scheduled.

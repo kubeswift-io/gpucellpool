@@ -424,7 +424,18 @@ func (r *GPUCellPoolReconciler) discoverCells(
 				fmt.Sprintf("removed a workload Node left by a previous incarnation of cell %s", name))
 		}
 
-		out = append(out, r.cellStatus(prev, pool.Name, pool.Namespace, name, idx, outer, obs, dec))
+		row := r.cellStatus(prev, pool.Name, pool.Namespace, name, idx, outer, obs, dec)
+
+		// A discarded GPU boot is worth one Event. Before this, a pool working
+		// through a broken configuration emitted nothing but "creating cell" — the
+		// failures themselves left no trace an operator could read after the fact,
+		// and `kubectl describe` is the first place anyone looks.
+		if row.Phase == cellsv1alpha1.CellPhaseFailed && prev.Phase != cellsv1alpha1.CellPhaseFailed {
+			r.event(pool, corev1.EventTypeWarning, failureEventReason(row.Reason),
+				fmt.Sprintf("cell %s failed (attempt %d): %s", name, row.FailureCount, row.Message))
+		}
+
+		out = append(out, row)
 	}
 
 	// Carry forward a row for a failed cell whose guest we have already deleted.
@@ -533,6 +544,18 @@ func (r *GPUCellPoolReconciler) cellStatus(
 		FailureCount:       prev.FailureCount,
 		LastTransitionTime: prev.LastTransitionTime,
 	}
+	// A decision that restates neither reason nor message is not saying "there is
+	// no cause" — it is saying "nothing new". Overwriting with empty strings threw
+	// the diagnosis away one reconcile after it was written, because the status
+	// write itself triggers the reconcile that takes AdvanceCell's terminal-Failed
+	// branch, and that branch returns a bare phase. Measured on hardware: three
+	// consecutive cells failed with an expired join credential and every Failed row
+	// read `reason: "" message: ""` at 3-second polling resolution, so the only
+	// record of WHY was gone and the guard keyed on ReasonNodeNeverRegistered could
+	// never see it.
+	if dec.Phase == prev.Phase && dec.Reason == "" && dec.Message == "" {
+		c.Reason, c.Message = prev.Reason, prev.Message
+	}
 	if obs.Node.Exists {
 		c.NodeName = name
 	}
@@ -555,9 +578,15 @@ func (r *GPUCellPoolReconciler) cellStatus(
 				Observe(r.now().Sub(outer.CreatedAt.Time).Seconds())
 		}
 	}
-	if dec.Phase == cellsv1alpha1.CellPhaseReady {
-		c.ReadyOnce = true
-	}
+	// A latch, as the field is documented and as both its readers assume: "this
+	// cell reached Ready at least once", not "this cell is Ready now". Setting it
+	// only from the current decision made it a mirror — it cleared the moment a
+	// cell left Ready — which defeated the startup-metric guard just above (a cell
+	// that blips and returns records a second "startup", measured from the guest's
+	// creation, so a day-old cell contributes a ~24h observation) and made
+	// suspectCredentialFailures' skip unreachable, since a row in Failed could
+	// never carry it.
+	c.ReadyOnce = prev.ReadyOnce || dec.Phase == cellsv1alpha1.CellPhaseReady
 	return c
 }
 
@@ -1012,6 +1041,17 @@ func (r *GPUCellPoolReconciler) now() time.Time {
 		return r.Clock()
 	}
 	return time.Now()
+}
+
+// failureEventReason keeps the cell's own reason as the Event reason, so the
+// Event stream and status agree and `kubectl get events --field-selector` can
+// find a credential failure. A reason is always set by the time a cell fails,
+// but an Event with an empty reason is rejected outright, so it never ships one.
+func failureEventReason(reason string) string {
+	if reason == "" {
+		return cellsv1alpha1.ReasonCellProvisionTimeout
+	}
+	return reason
 }
 
 func (r *GPUCellPoolReconciler) event(pool *cellsv1alpha1.GPUCellPool, kind, reason, msg string) {
