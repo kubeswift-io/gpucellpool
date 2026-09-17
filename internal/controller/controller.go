@@ -43,10 +43,11 @@ type GPUCellPoolReconciler struct {
 	Recorder events.EventRecorder
 	Clients  *workload.ClientCache
 
-	// Clock and the two factories are seams for tests.
+	// Clock, the two factories and Inventory are seams for tests.
 	Clock          func() time.Time
 	NewProvisioner func(client.Client) provisioner.Provisioner
 	NewProvider    func(kubernetes.Interface, string) capacity.Provider
+	Inventory      func(context.Context, *cellsv1alpha1.GPUCellPool) (*inventory.Counts, error)
 }
 
 // +kubebuilder:rbac:groups=cells.kubeswift.io,resources=gpucellpools,verbs=get;list;watch;create;update;patch;delete
@@ -55,6 +56,10 @@ type GPUCellPoolReconciler struct {
 // +kubebuilder:rbac:groups=swift.kubeswift.io,resources=swiftguests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=seed.kubeswift.io,resources=swiftseedprofiles,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=resource.k8s.io,resources=resourceslices;resourceclaims;resourceclaimtemplates;deviceclasses,verbs=get;list;watch
+// The native SwiftGPU ledger. Read-only, and read INSTEAD of the DRA one when a
+// pool sets cell.gpu.backend: Native — the two describe the same physical
+// devices but only one of them records a native allocation.
+// +kubebuilder:rbac:groups=gpu.kubeswift.io,resources=swiftgpunodes,verbs=get;list;watch
 // ClusterAPI provisioner. The bootstrap groups are wildcarded because the
 // bootstrap provider is the user's choice (kubeadm, k0smotron, ...) and its kind
 // is named in the pool spec, not known at build time.
@@ -125,12 +130,19 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// Step 10 (partly): the outer inventory, which also gates creation below.
-	// A read failure, or a driver that publishes nothing at all, both leave this
-	// nil: UNKNOWN. Only a driver that publishes devices we can see is allowed to
+	// A read failure, or a ledger that publishes nothing at all, both leave this
+	// nil: UNKNOWN. Only a ledger that publishes devices we can see is allowed to
 	// stall the pool with "no free GPU".
+	//
+	// WHICH ledger follows the pool's backend. The two keep separate books for the
+	// same physical devices — a native allocation never appears in a
+	// ResourceClaim — so reading DRA for a Native pool reported held GPUs as free
+	// and the pool created a cell per bootstrap timeout, each a clone and a boot
+	// that could not succeed.
 	var freeGPUs *int
-	if counts, invErr := inventory.FreeGPUs(ctx, r.Client, ""); invErr != nil {
-		log.V(1).Info("physical inventory unreadable; treating free GPUs as unknown", "err", invErr.Error())
+	if counts, invErr := r.physicalInventory(ctx, &pool); invErr != nil {
+		log.V(1).Info("physical inventory unreadable; treating free GPUs as unknown",
+			"backend", gpuBackend(&pool), "err", invErr.Error())
 	} else if counts.Known {
 		freeGPUs = &counts.Free
 	}
@@ -313,6 +325,21 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		requeue = plan.RequeueAfter
 	}
 	return ctrl.Result{RequeueAfter: requeue}, nil
+}
+
+// physicalInventory reads the GPU ledger that matches this pool's allocation
+// backend. Overridable so tests can drive both ledgers without standing up two
+// sets of CRDs.
+func (r *GPUCellPoolReconciler) physicalInventory(
+	ctx context.Context, pool *cellsv1alpha1.GPUCellPool,
+) (*inventory.Counts, error) {
+	if r.Inventory != nil {
+		return r.Inventory(ctx, pool)
+	}
+	if gpuBackend(pool) == cellsv1alpha1.GPUBackendNative {
+		return inventory.FreeGPUsNative(ctx, r.Client)
+	}
+	return inventory.FreeGPUs(ctx, r.Client, "")
 }
 
 // discoverCells rebuilds per-cell state from live objects in both clusters.

@@ -67,6 +67,16 @@ All notable changes to this project are documented here. The format follows
   nor message now means "nothing new" rather than "no cause", and a cell entering
   `Failed` emits one Warning Event carrying its reason, the cell name and the
   attempt number. Measured on hardware across three consecutive failures. (#44)
+- **A pool on `backend: Native` counted free GPUs from the DRA ledger**, which
+  cannot see a native allocation — it is recorded on
+  `SwiftGPUNode.status.gpus[].allocated` and never appears in a `ResourceClaim`.
+  Observed on a single-GPU cluster whose device was held by a native allocation:
+  the pool announced "1 free GPU(s) in the infrastructure cluster" and created a
+  cell per bootstrap timeout, each one a root-disk clone and a boot that could
+  never get a device. The guard that exists to stop exactly that was bypassed,
+  because its only view of the world was the wrong ledger. The inventory now
+  follows the pool's backend; a missing or empty ledger is still UNKNOWN rather
+  than "full", so a cluster without GPU discovery installed is not stalled. (#46)
 - **`status.cells[].reason` survived one reconcile, and `readyOnce` was a mirror
   of "Ready now" rather than the latch it is documented to be.** Two readers
   depend on the latch: the startup metric admitted a second observation after any
@@ -99,6 +109,11 @@ Two things need attention, neither automatic:
 
 - **Apply the CRD.** `status.cells[].reason` is new, and Helm does not update
   `crds/`. The manager names the dropped field at startup if you skip it.
+- **The operator reads one new API group.** `gpu.kubeswift.io/swiftgpunodes`
+  (read-only) is the native GPU ledger, consulted for pools on
+  `cell.gpu.backend: Native`. `helm upgrade` updates the ClusterRole; a
+  hand-maintained RBAC needs the rule added, or the inventory read fails and free
+  capacity falls back to UNKNOWN.
 - **Check your scraper.** If you scrape the metrics endpoint, it now needs a token
   whose owner may `get /metrics`. kube-prometheus-stack's Prometheus already holds
   that right; verify with

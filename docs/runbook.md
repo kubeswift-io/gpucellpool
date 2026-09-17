@@ -49,6 +49,24 @@ If `PhysicalGPUsAvailable=False (InsufficientPhysicalGPU)`, every device is take
 the pool is not broken, the cluster is full. The pool deliberately does **not** queue
 guests that could never be scheduled.
 
+**Which of those two commands is authoritative depends on `cell.gpu.backend`.** The
+two backends keep separate books for the same physical devices: a DRA allocation is
+a `ResourceClaim`, a native one is `SwiftGPUNode.status.gpus[].allocated` /
+`.allocatedTo`, and neither appears in the other. The pool counts free devices from
+the ledger matching its own backend, so on a cluster with both installed, compare
+against the right one:
+
+```bash
+# backend: DRA
+kubectl get resourceslices; kubectl get resourceclaims -A
+# backend: Native
+kubectl get swiftgpunode <node> -o jsonpath='{.status.gpus[*].allocatedTo}'
+```
+
+A device held by a native allocation — another pool, or a sandbox — is invisible to
+the DRA ledger and vice versa. If the condition and the ledger you are reading
+disagree, check which backend the pool declares before suspecting the operator.
+
 ### A cell sits in `Booting`
 
 The VM runs but has no address yet. If it persists, the usual cause is

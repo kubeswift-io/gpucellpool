@@ -55,6 +55,17 @@ func hamiMode(pool *cellsv1alpha1.GPUCellPool) string {
 	return cellsv1alpha1.HAMiModeDevicePlugin
 }
 
+// gpuBackend is which allocation backend a cell's GPU comes from, and therefore
+// which physical ledger is authoritative for this pool. The CRD defaults it, but
+// a pool created before the field existed, or through a client that strips
+// defaults, still has to resolve to something.
+func gpuBackend(pool *cellsv1alpha1.GPUCellPool) string {
+	if b := pool.Spec.Cell.GPU.Backend; b != "" {
+		return b
+	}
+	return cellsv1alpha1.GPUBackendDRA
+}
+
 func providerName(pool *cellsv1alpha1.GPUCellPool) string {
 	if pool.Spec.Capacity.Provider != "" {
 		return pool.Spec.Capacity.Provider
