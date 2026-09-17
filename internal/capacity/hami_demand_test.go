@@ -50,7 +50,7 @@ func demandFor(t *testing.T, ref *Device, pods ...*corev1.Pod) Demand {
 		objs = append(objs, p)
 	}
 	cs := fake.NewSimpleClientset(objs...)
-	d, err := NewHAMiProvider(cs, ModeDevicePlugin).PendingDemand(context.Background(), ref)
+	d, err := NewHAMiProvider(cs, ModeDevicePlugin, "").PendingDemand(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("PendingDemand: %v", err)
 	}
@@ -128,9 +128,40 @@ func TestPendingDemandIgnoresAlreadyScheduledPods(t *testing.T) {
 	}
 }
 
-func TestPendingDemandIsUnsupportedInDRAMode(t *testing.T) {
-	cs := fake.NewSimpleClientset()
-	if _, err := NewHAMiProvider(cs, ModeDRA).PendingDemand(context.Background(), refDevice()); err == nil {
-		t.Error("DRA mode should report ErrUnsupported rather than silently reading nothing")
+func TestPendingDemandInDRAModeReadsUnallocatedClaims(t *testing.T) {
+	ctx := context.Background()
+	ref := refDevice()
+
+	// Three claims against our class: one that fits a cell, one asking for more
+	// memory than a whole device has, one already allocated. Plus one for another
+	// class entirely, which is not our demand to answer.
+	cs := fake.NewSimpleClientset(
+		draClaim("fits", draClassName, 1, 30, 4096, false),
+		draClaim("too-big", draClassName, 1, 30, ref.MemoryMiB*2, false),
+		draClaim("placed", draClassName, 1, 30, 4096, true),
+		draClaim("other-class", "nvidia.example.com", 1, 30, 4096, false),
+	)
+
+	d, err := NewHAMiProvider(cs, ModeDRA, "").PendingDemand(ctx, ref)
+	if err != nil {
+		t.Fatalf("PendingDemand: %v", err)
+	}
+	if d.PendingRequests != 2 {
+		t.Errorf("PendingRequests = %d, want 2 (the allocated and foreign claims excluded)", d.PendingRequests)
+	}
+	if d.SatisfiableByOneCell != 1 {
+		t.Errorf("SatisfiableByOneCell = %d, want 1: a request larger than one device must never drive a scale-up",
+			d.SatisfiableByOneCell)
+	}
+}
+
+func TestPendingDemandInDRAModeNeedsAKnownCellShape(t *testing.T) {
+	cs := fake.NewSimpleClientset(draClaim("fits", draClassName, 1, 30, 4096, false))
+	d, err := NewHAMiProvider(cs, ModeDRA, "").PendingDemand(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("PendingDemand: %v", err)
+	}
+	if d.PendingRequests != 1 || d.SatisfiableByOneCell != 0 {
+		t.Errorf("demand = %+v; with no reference device nothing may be called satisfiable", d)
 	}
 }

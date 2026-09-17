@@ -37,8 +37,8 @@ workloads, and the pool scaled up and down on demand. Both cell provisioners wor
 (`docs/clusterapi-cells.md`).
 
 Alpha because the API is `v1alpha1` and one GPU is one GPU: pools of two or more cells
-are covered by a two-apiserver test harness, not by hardware. HAMi's DRA mode is not
-implemented.
+are covered by a two-apiserver test harness, not by hardware. HAMi's DRA mode is
+implemented but validated on a single GPU (`docs/limitations.md`).
 
 ## Example
 

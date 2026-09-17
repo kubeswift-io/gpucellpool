@@ -5,15 +5,32 @@ practical workaround, it is stated; where the answer is "a human has to act",
 that is stated too. Each gap that is tracked links its issue, so you can see
 whether it is being worked on rather than guessing.
 
-## HAMi DRA mode is unimplemented
+## HAMi DRA mode is validated on one GPU only
 
-Tracked as [#4](https://github.com/kubeswift-io/gpucellpool/issues/4).
+`spec.capacity.hami.mode: DRA` is implemented: capacity, readiness, the drain
+gate and the demand signal all read `resource.k8s.io` instead of HAMi's node
+annotations. It needs, in the **workload** cluster:
 
-`spec.capacity.hami.mode: DRA` is accepted by the API but
-`internal/capacity`'s DRA path returns `ErrUnsupported` — capacity reads,
-demand signal (`docs/autoscaling.md`), and readiness all fail loudly rather
-than silently reading zero. **`DevicePlugin` mode is the only implementation.**
-Use it (the default) even if your HAMi install also has DRA mode available.
+- Kubernetes >= 1.34 with `DynamicResourceAllocation`, and the
+  `DRAConsumableCapacity` gate — beta and on by default from 1.36, explicit on
+  1.34 and 1.35;
+- Project-HAMi's DRA driver, and `capacity.hami.deviceClassName` naming the
+  DeviceClass it ships (the webhook requires the field in DRA mode);
+- CDI in the cell's container runtime, which the reference cell image bakes.
+
+Each of those failures is reported separately rather than as "no capacity",
+because they imitate each other: no `resource.k8s.io` looks like no slices, a
+missing DeviceClass looks like nothing can claim, and a device published with no
+`capacity` — what a missing `DRAConsumableCapacity` gate produces, since the
+apiserver drops gated fields rather than rejecting them — looks exactly like a
+GPU with nothing left on it.
+
+What is thin is the evidence, not the code: it is exercised against the shapes
+Project-HAMi's driver publishes, and hardware-validated on a single-GPU node.
+Multi-GPU and multi-model DRA pools are untested (see
+[#5](https://github.com/kubeswift-io/gpucellpool/issues/5) and
+[#49](https://github.com/kubeswift-io/gpucellpool/issues/49)). `DevicePlugin`
+remains the default.
 
 ## No automated outer-drain sequencing
 

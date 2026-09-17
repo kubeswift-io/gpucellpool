@@ -67,6 +67,7 @@ const (
 	ReasonHAMiNotDetected         = "HAMiNotDetected"
 	ReasonRegistrationUnparseable = "RegistrationUnparseable"
 	ReasonDRAFeatureGateMissing   = "DRAFeatureGateMissing"
+	ReasonDRADeviceClassMissing   = "DRADeviceClassMissing"
 
 	ReasonCapacityFree     = "CapacityFree"
 	ReasonSaturated        = "Saturated"

@@ -46,7 +46,7 @@ type GPUCellPoolReconciler struct {
 	// Clock, the two factories and Inventory are seams for tests.
 	Clock          func() time.Time
 	NewProvisioner func(client.Client) provisioner.Provisioner
-	NewProvider    func(kubernetes.Interface, string) capacity.Provider
+	NewProvider    func(kubernetes.Interface, string, string) capacity.Provider
 	Inventory      func(context.Context, *cellsv1alpha1.GPUCellPool) (*inventory.Counts, error)
 }
 
@@ -119,7 +119,7 @@ func (r *GPUCellPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	var provider capacity.Provider
 	if reachable {
-		provider = r.provider(inner, hamiMode(&pool))
+		provider = r.provider(inner, &pool)
 	}
 
 	// Step 4: rediscover cells from live objects. status.cells is a projection,
@@ -792,7 +792,7 @@ func (r *GPUCellPoolReconciler) reconcileDeletion(
 	inner, reachable, _, _ := r.workloadClient(ctx, pool)
 	var provider capacity.Provider
 	if reachable {
-		provider = r.provider(inner, hamiMode(pool))
+		provider = r.provider(inner, pool)
 	}
 
 	// Through the provisioner, NOT a SwiftGuest list. A ClusterAPI pool owns
@@ -1056,11 +1056,14 @@ func (r *GPUCellPoolReconciler) provisioner(pool *cellsv1alpha1.GPUCellPool) (pr
 	}
 }
 
-func (r *GPUCellPoolReconciler) provider(cs kubernetes.Interface, mode string) capacity.Provider {
+func (r *GPUCellPoolReconciler) provider(
+	cs kubernetes.Interface, pool *cellsv1alpha1.GPUCellPool,
+) capacity.Provider {
+	mode, class := hamiMode(pool), hamiDeviceClass(pool)
 	if r.NewProvider != nil {
-		return r.NewProvider(cs, mode)
+		return r.NewProvider(cs, mode, class)
 	}
-	return capacity.NewHAMiProvider(cs, mode)
+	return capacity.NewHAMiProvider(cs, mode, class)
 }
 
 func (r *GPUCellPoolReconciler) now() time.Time {

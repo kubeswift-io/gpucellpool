@@ -66,6 +66,16 @@ func gpuBackend(pool *cellsv1alpha1.GPUCellPool) string {
 	return cellsv1alpha1.GPUBackendDRA
 }
 
+// hamiDeviceClass is the DeviceClass whose ResourceSlices carry the cells'
+// capacity in DRA mode. Empty lets the provider fall back to Project-HAMi's own
+// class, which is what its chart installs.
+func hamiDeviceClass(pool *cellsv1alpha1.GPUCellPool) string {
+	if h := pool.Spec.Capacity.HAMi; h != nil {
+		return h.DeviceClassName
+	}
+	return ""
+}
+
 func providerName(pool *cellsv1alpha1.GPUCellPool) string {
 	if pool.Spec.Capacity.Provider != "" {
 		return pool.Spec.Capacity.Provider

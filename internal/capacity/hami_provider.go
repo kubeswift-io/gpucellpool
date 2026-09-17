@@ -28,14 +28,20 @@ type HAMiProvider struct {
 	// GateLabel is the node label HAMi's scheduler requires (normally "gpu").
 	// The user declares its value; we only check presence.
 	GateLabel string
+	// DeviceClass is the DeviceClass whose ResourceSlices carry the cells'
+	// capacity in DRA mode. Empty means Project-HAMi's own class.
+	DeviceClass string
 }
 
 // NewHAMiProvider returns a provider over a workload-cluster client.
-func NewHAMiProvider(cs kubernetes.Interface, mode string) *HAMiProvider {
+//
+// deviceClass is only read in DRA mode; an empty value means Project-HAMi's own
+// DeviceClass, which is what its chart installs.
+func NewHAMiProvider(cs kubernetes.Interface, mode, deviceClass string) *HAMiProvider {
 	if mode == "" {
 		mode = ModeDevicePlugin
 	}
-	return &HAMiProvider{Client: cs, Mode: mode, GateLabel: NodeLabelGate}
+	return &HAMiProvider{Client: cs, Mode: mode, GateLabel: NodeLabelGate, DeviceClass: deviceClass}
 }
 
 // Name implements Provider.
@@ -44,11 +50,7 @@ func (p *HAMiProvider) Name() string { return cellsv1alpha1.CapacityProviderHAMi
 // Health implements Provider.
 func (p *HAMiProvider) Health(ctx context.Context, nodes []string) (Health, error) {
 	if p.Mode == ModeDRA {
-		return Health{
-			Ready:   false,
-			Reason:  cellsv1alpha1.ReasonDRAFeatureGateMissing,
-			Message: "hami.mode: DRA is not implemented yet; use DevicePlugin",
-		}, nil
+		return p.draHealth(ctx, nodes)
 	}
 	if len(nodes) == 0 {
 		// No cells yet is not a provider failure.
@@ -107,7 +109,7 @@ func (p *HAMiProvider) Health(ctx context.Context, nodes []string) (Health, erro
 // default), so a one-GPU cell would report ten.
 func (p *HAMiProvider) Devices(ctx context.Context, name string) (int, error) {
 	if p.Mode == ModeDRA {
-		return 0, ErrUnsupported
+		return p.draDevices(ctx, name)
 	}
 	node, err := p.Client.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -129,7 +131,7 @@ func (p *HAMiProvider) Devices(ctx context.Context, name string) (int, error) {
 // Capacity implements Provider.
 func (p *HAMiProvider) Capacity(ctx context.Context, nodes []string) (Capacity, error) {
 	if p.Mode == ModeDRA {
-		return Capacity{}, ErrUnsupported
+		return p.draCapacity(ctx, nodes)
 	}
 
 	byModel := map[string]*ModelCapacity{}
@@ -201,7 +203,7 @@ func (p *HAMiProvider) Capacity(ctx context.Context, nodes []string) (Capacity, 
 // Allocations implements Provider.
 func (p *HAMiProvider) Allocations(ctx context.Context, node string) (Allocations, error) {
 	if p.Mode == ModeDRA {
-		return Allocations{}, ErrUnsupported
+		return p.draAllocations(ctx, node)
 	}
 	a, _, err := p.nodeAllocations(ctx, node)
 	return a, err
