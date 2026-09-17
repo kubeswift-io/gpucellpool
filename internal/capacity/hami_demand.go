@@ -31,7 +31,7 @@ const (
 // over-large requests DO show up here and must be filtered by the second gate.
 func (p *HAMiProvider) PendingDemand(ctx context.Context, ref *Device) (Demand, error) {
 	if p.Mode == ModeDRA {
-		return Demand{}, ErrUnsupported
+		return p.draPendingDemand(ctx, ref)
 	}
 
 	pods, err := p.Client.CoreV1().Pods(metav1.NamespaceAll).List(ctx, metav1.ListOptions{

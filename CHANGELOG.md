@@ -7,6 +7,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **HAMi DRA mode.** `capacity.hami.mode: DRA` now reads capacity, readiness, the
+  drain gate and the demand signal from `resource.k8s.io` instead of HAMi's node
+  annotations: totals from each device's `capacity` (`cores`, `memory`),
+  allocations from `consumedCapacity` on allocated `ResourceClaims`, and demand
+  from unallocated claims naming the pool's DeviceClass. The last of those is a
+  better signal than the DevicePlugin path's — a claim is unambiguously GPU
+  demand, where a pending Pod may be pending for a dozen unrelated reasons —
+  though both still refuse to call a request satisfiable unless one fresh cell
+  could actually serve it. The provider preflights what makes DRA readable at
+  all and names each failure separately (`DRADeviceClassMissing`,
+  `DRAFeatureGateMissing`, `HAMiNotDetected`), because they imitate each other
+  and every one of them otherwise reads as "this GPU has nothing left": in
+  particular a device published with no `capacity` means the
+  `DRAConsumableCapacity` gate is off, since the apiserver drops gated fields
+  rather than rejecting them. Shapes are taken from what Project-HAMi's DRA
+  driver actually publishes, not from the API alone. `DevicePlugin` remains the
+  default. (#4)
 - **A join-credential guard.** A pool that had worked and whose bootstrap
   credential then expired was invisible to both existing guards — `EverReady`
   defeats the never-worked check, and no Node registering defeats the capacity

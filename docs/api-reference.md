@@ -170,7 +170,7 @@ plugin never lands on the cell.
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `mode` | `DevicePlugin \| DRA` | `DevicePlugin` | `DRA` mode is **not implemented** — see `docs/limitations.md` |
+| `mode` | `DevicePlugin \| DRA` | `DevicePlugin` | where capacity is read from: HAMi's node annotations, or `resource.k8s.io`. `DRA` needs the prerequisites in `docs/limitations.md` |
 | `expectedDevicesPerCell` | int32 | `cell.gpu.count` | devices HAMi must advertise before a cell counts Ready |
 | `deviceClassName` | string | — | required in `DRA` mode |
 
@@ -245,6 +245,7 @@ stuck one.
 | `CapacityProviderReady` | HAMi detected and parseable on every ready cell's Node | `HAMiNotDetected`, `RegistrationUnparseable`, `DRAFeatureGateMissing` |
 | `CapacityAvailable` | some ready cell has free memory *and* free compute | `Saturated`, `Unknown`, `Heterogeneous` |
 | `PhysicalGPUsAvailable` | outer inventory has >=1 free device, or no cell is waiting for one | `InsufficientPhysicalGPU` |
+| `CapacityProviderReady` (DRA mode) | the DRA driver is installed and publishing capacity | `DRADeviceClassMissing`, `DRAFeatureGateMissing`, `HAMiNotDetected` |
 | `ScalingActive` | autoscaling is enabled and demand was read successfully | see `docs/autoscaling.md` for every reason |
 | `CellDrainRequested` | an outer node holding a cell is cordoned/draining | — |
 

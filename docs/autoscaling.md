@@ -135,5 +135,9 @@ memory than a device has).
 
 ## Known gap
 
-`hami.mode: DRA` capacity reads `PendingDemand` as `ErrUnsupported` — demand
-signal is implemented for `DevicePlugin` mode only. See `docs/limitations.md`.
+`hami.mode: DRA` reads demand from unallocated `ResourceClaims` naming the
+pool's DeviceClass, which is a cleaner signal than a pending Pod: a claim is
+unambiguously GPU-capacity demand, where a Pod can be pending for a dozen
+unrelated reasons. Both modes then apply the same second filter — a fresh cell
+of this pool's shape must actually satisfy the request — so a claim asking for
+more than one whole device never drives a scale-up.

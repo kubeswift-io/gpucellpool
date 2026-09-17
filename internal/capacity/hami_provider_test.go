@@ -2,7 +2,6 @@ package capacity
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
@@ -68,7 +67,7 @@ func TestDevicesUsesRegistrationNotAllocatable(t *testing.T) {
 	// The trap, reproduced from the real cell: allocatable says 10.
 	node.Status.Allocatable = corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("10")}
 
-	p := NewHAMiProvider(fake.NewSimpleClientset(node), ModeDevicePlugin)
+	p := NewHAMiProvider(fake.NewSimpleClientset(node), ModeDevicePlugin, "")
 	got, err := p.Devices(context.Background(), "cell-0")
 	if err != nil {
 		t.Fatalf("Devices: %v", err)
@@ -79,7 +78,7 @@ func TestDevicesUsesRegistrationNotAllocatable(t *testing.T) {
 }
 
 func TestDevicesUnknownNodeIsZeroNotError(t *testing.T) {
-	p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDevicePlugin)
+	p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDevicePlugin, "")
 	got, err := p.Devices(context.Background(), "not-joined-yet")
 	if err != nil || got != 0 {
 		t.Errorf("got %d/%v, want 0/nil — a node that has not registered is not an error", got, err)
@@ -88,7 +87,7 @@ func TestDevicesUnknownNodeIsZeroNotError(t *testing.T) {
 
 func TestDevicesUnhealthyIsNotCapacity(t *testing.T) {
 	reg := `[{"id":"GPU-a","count":10,"devmem":8192,"devcore":100,"type":"m","health":false}]`
-	p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", reg, nil)), ModeDevicePlugin)
+	p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", reg, nil)), ModeDevicePlugin, "")
 	got, err := p.Devices(context.Background(), "cell-0")
 	if err != nil || got != 0 {
 		t.Errorf("got %d/%v, want 0/nil for an unhealthy device", got, err)
@@ -99,7 +98,7 @@ func TestHealth(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("registered and gated", func(t *testing.T) {
-		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", measuredRegistration, nil)), ModeDevicePlugin)
+		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", measuredRegistration, nil)), ModeDevicePlugin, "")
 		h, err := p.Health(ctx, []string{"cell-0"})
 		if err != nil || !h.Ready {
 			t.Errorf("got %+v/%v", h, err)
@@ -107,7 +106,7 @@ func TestHealth(t *testing.T) {
 	})
 
 	t.Run("no registration anywhere", func(t *testing.T) {
-		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", "", nil)), ModeDevicePlugin)
+		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", "", nil)), ModeDevicePlugin, "")
 		h, _ := p.Health(ctx, []string{"cell-0"})
 		if h.Ready || h.Reason != cellsv1alpha1.ReasonHAMiNotDetected {
 			t.Errorf("got %+v", h)
@@ -121,7 +120,7 @@ func TestHealth(t *testing.T) {
 		// HAMi registered the device, but its scheduler will never place on this
 		// node. Reporting Ready here would strand workloads with no explanation.
 		p := NewHAMiProvider(fake.NewSimpleClientset(
-			cellNode("cell-0", measuredRegistration, map[string]string{"other": "x"})), ModeDevicePlugin)
+			cellNode("cell-0", measuredRegistration, map[string]string{"other": "x"})), ModeDevicePlugin, "")
 		h, _ := p.Health(ctx, []string{"cell-0"})
 		if h.Ready {
 			t.Error("Ready despite the missing gate label")
@@ -132,7 +131,7 @@ func TestHealth(t *testing.T) {
 	})
 
 	t.Run("unparseable registration is loud", func(t *testing.T) {
-		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", `[{"id":`, nil)), ModeDevicePlugin)
+		p := NewHAMiProvider(fake.NewSimpleClientset(cellNode("cell-0", `[{"id":`, nil)), ModeDevicePlugin, "")
 		h, err := p.Health(ctx, []string{"cell-0"})
 		if err != nil {
 			t.Fatalf("unexpected error return: %v", err)
@@ -143,21 +142,27 @@ func TestHealth(t *testing.T) {
 	})
 
 	t.Run("no cells yet is not a provider failure", func(t *testing.T) {
-		p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDevicePlugin)
+		p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDevicePlugin, "")
 		h, _ := p.Health(ctx, nil)
 		if !h.Ready {
 			t.Errorf("got %+v, want ready: an empty pool says nothing about HAMi", h)
 		}
 	})
 
-	t.Run("DRA mode says so instead of reading nothing", func(t *testing.T) {
-		p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDRA)
-		h, _ := p.Health(ctx, []string{"cell-0"})
-		if h.Ready || h.Reason != cellsv1alpha1.ReasonDRAFeatureGateMissing {
-			t.Errorf("got %+v", h)
+	t.Run("DRA mode with no driver installed names the missing DeviceClass", func(t *testing.T) {
+		// Not ErrUnsupported any more: DRA mode is implemented, and an empty
+		// cluster means the driver is absent, which is a different fault from
+		// "the feature gate is off" and from "the GPU has nothing left".
+		p := NewHAMiProvider(fake.NewSimpleClientset(), ModeDRA, "")
+		h, err := p.Health(ctx, []string{"cell-0"})
+		if err != nil {
+			t.Fatalf("Health: %v", err)
 		}
-		if _, err := p.Capacity(ctx, []string{"cell-0"}); !errors.Is(err, ErrUnsupported) {
-			t.Errorf("Capacity in DRA mode = %v, want ErrUnsupported", err)
+		if h.Ready || h.Reason != cellsv1alpha1.ReasonDRADeviceClassMissing {
+			t.Errorf("got %+v, want not-ready/DRADeviceClassMissing", h)
+		}
+		if !strings.Contains(h.Message, DRADriverName) {
+			t.Errorf("message does not name the class to install: %q", h.Message)
 		}
 	})
 }
@@ -172,7 +177,7 @@ func TestCapacityAggregatesAndAttributes(t *testing.T) {
 		gpuPod("a", "cell-0", "GPU-a,NVIDIA,3000,30:;", ";;", corev1.PodRunning),
 		gpuPod("b", "cell-0", "GPU-a,NVIDIA,3000,30:;", ";;", corev1.PodRunning),
 	)
-	p := NewHAMiProvider(cs, ModeDevicePlugin)
+	p := NewHAMiProvider(cs, ModeDevicePlugin, "")
 
 	c, err := p.Capacity(ctx, []string{"cell-0", "cell-1"})
 	if err != nil {
@@ -200,7 +205,7 @@ func TestCapacityHeterogeneousPool(t *testing.T) {
 		cellNode("cell-0", registrationFor("GPU-a", "NVIDIA GeForce GTX 1080", 8192), nil),
 		cellNode("cell-1", registrationFor("GPU-b", "NVIDIA L40S", 46068), nil),
 	)
-	p := NewHAMiProvider(cs, ModeDevicePlugin)
+	p := NewHAMiProvider(cs, ModeDevicePlugin, "")
 	c, err := p.Capacity(context.Background(), []string{"cell-0", "cell-1"})
 	if err != nil {
 		t.Fatalf("Capacity: %v", err)
@@ -232,7 +237,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			gpuPod("done", "cell-0", measuredAllocated, ";;", corev1.PodSucceeded),
 			gpuPod("crashed", "cell-0", measuredAllocated, ";;", corev1.PodFailed),
 		)
-		a, err := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0")
+		a, err := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0")
 		if err != nil {
 			t.Fatalf("Allocations: %v", err)
 		}
@@ -246,7 +251,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			cellNode("cell-0", measuredRegistration, nil),
 			gpuPod("live", "cell-0", measuredAllocated, ";;", corev1.PodRunning),
 		)
-		a, _ := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0")
+		a, _ := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0")
 		if a.Empty() || a.Consumers != 1 || a.MemoryMiB != 3000 || a.CorePercent != 30 {
 			t.Errorf("got %+v", a)
 		}
@@ -259,7 +264,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			cellNode("cell-0", measuredRegistration, nil),
 			gpuPod("binding", "cell-0", "", "GPU-e71afe85-9309-864a-477e-91caa89f3932,NVIDIA,3000,30:;", corev1.PodPending),
 		)
-		a, _ := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0")
+		a, _ := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0")
 		if a.Empty() || !a.InFlight {
 			t.Errorf("got %+v, want in-flight and non-empty", a)
 		}
@@ -270,7 +275,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			cellNode("cell-0", measuredRegistration, nil),
 			gpuPod("elsewhere", "cell-9", measuredAllocated, ";;", corev1.PodRunning),
 		)
-		a, _ := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0")
+		a, _ := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0")
 		if !a.Empty() {
 			t.Errorf("got %+v, want empty", a)
 		}
@@ -281,7 +286,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			cellNode("cell-0", measuredRegistration, nil),
 			gpuPod("plain", "cell-0", "", "", corev1.PodRunning),
 		)
-		a, _ := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0")
+		a, _ := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0")
 		if !a.Empty() {
 			t.Errorf("got %+v, want empty", a)
 		}
@@ -292,7 +297,7 @@ func TestAllocationsGateDrain(t *testing.T) {
 			cellNode("cell-0", measuredRegistration, nil),
 			gpuPod("bad", "cell-0", "GPU-a,NVIDIA,notanumber,30:;", "", corev1.PodRunning),
 		)
-		if _, err := NewHAMiProvider(cs, ModeDevicePlugin).Allocations(ctx, "cell-0"); err == nil {
+		if _, err := NewHAMiProvider(cs, ModeDevicePlugin, "").Allocations(ctx, "cell-0"); err == nil {
 			t.Error("accepted a malformed allocation; a drain would proceed on false confidence")
 		}
 	})
