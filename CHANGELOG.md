@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.1.2] — 2026-09-18
 
 ### Added
 
@@ -123,7 +123,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Upgrading
 
-Two things need attention, neither automatic:
+Three things need attention, none automatic:
 
 - **Apply the CRD.** `status.cells[].reason` is new, and Helm does not update
   `crds/`. The manager names the dropped field at startup if you skip it.

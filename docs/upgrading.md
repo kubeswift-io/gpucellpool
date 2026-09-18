@@ -46,6 +46,21 @@ credential cannot read CRDs the line says `CRD schema not compared` — the chec
 read-only and optional (`apiextensions.k8s.io/customresourcedefinitions: get`), and
 its absence degrades the check rather than the operator.
 
+### What v0.1.1 → v0.1.2 drops if you skip it
+
+One field, and skipping it costs you the diagnosis exactly when you need it:
+
+| Field | Consequence of the old schema |
+|---|---|
+| `status.cells[].reason` | the machine-readable cause behind a cell's phase is discarded on write. A failed cell reports `phase: Failed` with prose and nothing to match on, and the guard that names an expired join credential (`BootstrapCredentialSuspect`) has nothing to count |
+
+v0.1.2 also makes the operator read one **new API group**, read-only:
+`gpu.kubeswift.io/swiftgpunodes`. It is what counts free GPUs for pools on
+`cell.gpu.backend: Native`. `helm upgrade` updates the ClusterRole for you; a
+hand-maintained RBAC needs the rule, or the read fails and free capacity falls
+back to UNKNOWN (which does not stall the pool, but does stop it pre-flighting
+"no free GPU").
+
 ### What v0.1.0 → v0.1.1 drops if you skip it
 
 Both fields `updatePolicy` added:
