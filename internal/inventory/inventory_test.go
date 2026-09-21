@@ -162,7 +162,7 @@ func TestFreeGPUsNativeCountsTheNativeLedger(t *testing.T) {
 		gpuNode("a", &yes, true, false), // one held, one free
 		gpuNode("b", &yes, false),       // one free
 	)
-	got, err := FreeGPUsNative(context.Background(), c)
+	got, err := FreeGPUsNative(context.Background(), c, "")
 	if err != nil {
 		t.Fatalf("FreeGPUsNative: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestFreeGPUsNativeCountsTheNativeLedger(t *testing.T) {
 
 func TestFreeGPUsNativeTreatsAWholeNodeWithoutVFIOAsUnusable(t *testing.T) {
 	no := false
-	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", &no, false, false)))
+	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", &no, false, false)), "")
 	if err != nil {
 		t.Fatalf("FreeGPUsNative: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestFreeGPUsNativeTreatsAWholeNodeWithoutVFIOAsUnusable(t *testing.T) {
 }
 
 func TestFreeGPUsNativeAssumesUsableWhenVFIOIsNotReported(t *testing.T) {
-	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", nil, false)))
+	got, err := FreeGPUsNative(context.Background(), nativeClient(gpuNode("a", nil, false)), "")
 	if err != nil {
 		t.Fatalf("FreeGPUsNative: %v", err)
 	}
@@ -197,11 +197,166 @@ func TestFreeGPUsNativeAssumesUsableWhenVFIOIsNotReported(t *testing.T) {
 // No SwiftGPUNodes at all is a configuration signal, not "the cluster is full" —
 // the same contract the DRA path has for a driver that publishes nothing.
 func TestFreeGPUsNativeWithNoLedgerIsUnknownNotFull(t *testing.T) {
-	got, err := FreeGPUsNative(context.Background(), nativeClient())
+	got, err := FreeGPUsNative(context.Background(), nativeClient(), "")
 	if err != nil {
 		t.Fatalf("FreeGPUsNative: %v", err)
 	}
 	if got.Known {
 		t.Errorf("counts = %+v, want Known false so the caller treats it as unknown", got)
 	}
+}
+
+// gpuDev is one entry in a SwiftGPUNode's status.gpus[], with the model the
+// plain gpuNode helper leaves out.
+type gpuDev struct {
+	model     string
+	allocated bool
+}
+
+func gpuNodeModels(name string, devs ...gpuDev) *unstructured.Unstructured {
+	gpus := make([]any, 0, len(devs))
+	for i, d := range devs {
+		gpus = append(gpus, map[string]any{
+			"index":      int64(i),
+			"pciAddress": "0000:0" + string(rune('1'+i)) + ":00.0",
+			"model":      d.model,
+			"allocated":  d.allocated,
+		})
+	}
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"gpus": gpus, "vfioReady": true},
+	}}
+	u.SetGroupVersionKind(SwiftGPUNodeGVK)
+	u.SetName(name)
+	return u
+}
+
+// The defect: on a heterogeneous cluster the count answered "devices" when the
+// question was "devices this pool can use". A pool asking for an H200 was
+// satisfied by a free L40S, so the guard passed and the pool created a cell
+// that could never allocate — a root-disk clone, a boot and a full
+// bootstrap.readyTimeout per attempt.
+func TestFreeGPUsNativeExcludesDevicesTheProfileCannotUse(t *testing.T) {
+	c := nativeClient(gpuNodeModels("a", gpuDev{model: "NVIDIA L40S"}, gpuDev{model: "NVIDIA L40S"}))
+
+	got, err := FreeGPUsNative(context.Background(), c, "H200-SXM")
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Free != 0 {
+		t.Errorf("free = %d, want 0: no L40S can satisfy an H200-SXM profile", got.Free)
+	}
+	// Load-bearing: the ledger published devices, so this is a KNOWN zero, not
+	// an unknown. Known=false would make the guard fail open and re-create the
+	// exact waste this exists to prevent.
+	if !got.Known {
+		t.Error("Known = false; a cluster whose devices all fail the filter is known to have none usable")
+	}
+}
+
+// The filter must be the allocator's filter, not a lookalike. KubeSwift matches
+// with strings.Contains(device.model, profile.model) — a profile saying "L40S"
+// selects a device reported as "NVIDIA L40S". An equality check would count
+// zero here, and a zero STALLS the pool.
+func TestFreeGPUsNativeMatchesTheAllocatorsSubstringRule(t *testing.T) {
+	c := nativeClient(gpuNodeModels("a",
+		gpuDev{model: "NVIDIA L40S"},
+		gpuDev{model: "NVIDIA H200-SXM"},
+		gpuDev{model: "NVIDIA L40S", allocated: true},
+	))
+
+	got, err := FreeGPUsNative(context.Background(), c, "L40S")
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Published != 2 || got.Allocated != 1 || got.Free != 1 {
+		t.Errorf("counts = %+v, want published 2 allocated 1 free 1 (the two L40S, one held)", got)
+	}
+}
+
+// An unconstrained profile must behave exactly as before this change.
+func TestFreeGPUsNativeEmptyModelCountsEverything(t *testing.T) {
+	c := nativeClient(gpuNodeModels("a", gpuDev{model: "NVIDIA L40S"}, gpuDev{model: "NVIDIA H200-SXM"}))
+
+	got, err := FreeGPUsNative(context.Background(), c, "")
+	if err != nil {
+		t.Fatalf("FreeGPUsNative: %v", err)
+	}
+	if got.Free != 2 || got.Published != 2 {
+		t.Errorf("counts = %+v, want published 2 free 2", got)
+	}
+}
+
+// A filter that cannot be resolved must never manufacture a zero: a zero stalls
+// the pool, which is a worse failure than the one being fixed.
+func TestNativeProfileModelMissingProfileIsNoFilter(t *testing.T) {
+	s := runtime.NewScheme()
+	s.AddKnownTypeWithName(SwiftGPUProfileGVK, &unstructured.Unstructured{})
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+
+	model, err := NativeProfileModel(context.Background(), c, "ns", "absent")
+	if err != nil {
+		t.Fatalf("NativeProfileModel: %v", err)
+	}
+	if model != "" {
+		t.Errorf("model = %q, want \"\" (no constraint) for a profile that is not there", model)
+	}
+}
+
+// A DRA claim that narrows which devices it accepts cannot be counted honestly
+// without evaluating its CEL selectors, which is the scheduler's job. Detecting
+// the constraint is shallow — does a request carry selectors — and that is all
+// this needs to decide between "count" and "UNKNOWN".
+func TestDRARequestIsConstrained(t *testing.T) {
+	ctx := context.Background()
+	tmpl := func(name string, selectors []resourceapi.DeviceSelector) *resourceapi.ResourceClaimTemplate {
+		return &resourceapi.ResourceClaimTemplate{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: name},
+			Spec: resourceapi.ResourceClaimTemplateSpec{
+				Spec: resourceapi.ResourceClaimSpec{
+					Devices: resourceapi.DeviceClaim{
+						Requests: []resourceapi.DeviceRequest{{
+							Name: "gpu",
+							Exactly: &resourceapi.ExactDeviceRequest{
+								DeviceClassName: "kubeswift-gpu",
+								Selectors:       selectors,
+							},
+						}},
+					},
+				},
+			},
+		}
+	}
+	sel := []resourceapi.DeviceSelector{{
+		CEL: &resourceapi.CELDeviceSelector{Expression: `device.attributes["gpu.kubeswift.io"].model == "H200-SXM"`},
+	}}
+
+	t.Run("selectors present", func(t *testing.T) {
+		got, err := DRARequestIsConstrained(ctx, newClient(tmpl("narrow", sel)), "ns", "narrow", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got {
+			t.Error("want constrained: the claim selects a subset of devices, so the count is not about this pool")
+		}
+	})
+
+	t.Run("no selectors", func(t *testing.T) {
+		got, err := DRARequestIsConstrained(ctx, newClient(tmpl("any", nil)), "ns", "any", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got {
+			t.Error("want unconstrained: any device the driver publishes satisfies this claim")
+		}
+	})
+
+	// Same rule as everywhere else here: an absent object is not a reason to
+	// change the answer in the direction that stalls a pool.
+	t.Run("template absent", func(t *testing.T) {
+		got, err := DRARequestIsConstrained(ctx, newClient(), "ns", "gone", "")
+		if err != nil || got {
+			t.Errorf("got (%v, %v), want (false, nil)", got, err)
+		}
+	})
 }
