@@ -60,6 +60,7 @@ type GPUCellPoolReconciler struct {
 // pool sets cell.gpu.backend: Native — the two describe the same physical
 // devices but only one of them records a native allocation.
 // +kubebuilder:rbac:groups=gpu.kubeswift.io,resources=swiftgpunodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gpu.kubeswift.io,resources=swiftgpuprofiles,verbs=get;list;watch
 // ClusterAPI provisioner. The bootstrap groups are wildcarded because the
 // bootstrap provider is the user's choice (kubeadm, k0smotron, ...) and its kind
 // is named in the pool spec, not known at build time.
@@ -337,7 +338,33 @@ func (r *GPUCellPoolReconciler) physicalInventory(
 		return r.Inventory(ctx, pool)
 	}
 	if gpuBackend(pool) == cellsv1alpha1.GPUBackendNative {
-		return inventory.FreeGPUsNative(ctx, r.Client)
+		// The pool's own model constraint, so the count answers "devices THIS
+		// pool can use" rather than "devices". Unconstrained pools are
+		// unaffected: "" matches every device, exactly as in the allocator.
+		var profileName string
+		if n := pool.Spec.Cell.GPU.Native; n != nil {
+			profileName = n.GPUProfileRef.Name
+		}
+		model, err := inventory.NativeProfileModel(ctx, r.Client, pool.Namespace, profileName)
+		if err != nil {
+			return nil, err
+		}
+		return inventory.FreeGPUsNative(ctx, r.Client, model)
+	}
+	// A DRA pool whose claim narrows the devices it will accept cannot be
+	// counted honestly here — see DRARequestIsConstrained. Report UNKNOWN
+	// rather than a number that is about the driver's devices instead of this
+	// pool's.
+	dra := pool.Spec.Cell.GPU.DRA
+	if dra != nil {
+		constrained, err := inventory.DRARequestIsConstrained(
+			ctx, r.Client, pool.Namespace, dra.ResourceClaimTemplateName, dra.ResourceClaimName)
+		if err != nil {
+			return nil, err
+		}
+		if constrained {
+			return &inventory.Counts{}, nil
+		}
 	}
 	return inventory.FreeGPUs(ctx, r.Client, "")
 }

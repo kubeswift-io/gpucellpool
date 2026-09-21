@@ -102,6 +102,7 @@ rules:
   - gpu.kubeswift.io
   resources:
   - swiftgpunodes
+  - swiftgpuprofiles
   verbs:
   - get
   - list

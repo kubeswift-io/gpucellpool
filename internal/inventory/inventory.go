@@ -8,6 +8,7 @@ package inventory
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	resourceapi "k8s.io/api/resource/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -140,7 +141,21 @@ var SwiftGPUNodeGVK = schema.GroupVersionKind{
 // publishes nothing at all leaves Known false, because a cluster with no GPU
 // discovery installed tells us nothing about capacity. A missing CRD is exactly
 // that case, not an error — the backend may simply not be deployed.
-func FreeGPUsNative(ctx context.Context, c client.Client) (*Counts, error) {
+//
+// model is the pool's SwiftGPUProfile.spec.model, or "" for no constraint. It
+// is applied with EXACTLY the predicate KubeSwift's allocator uses —
+// strings.Contains(device.model, model), empty matching everything
+// (internal/controller/swiftgpu/allocate.go). Mirroring it rather than
+// inventing a rule is the whole point: a pre-flight that disagrees with the
+// allocator is worse than no pre-flight, because a count of zero STALLS the
+// pool (ReasonInsufficientGPUs) rather than merely wasting one cell. Sharing
+// the predicate means a filtered zero is a real zero — whatever the allocator
+// would have done with the same devices, this arrives at the same answer.
+//
+// Note what is deliberately NOT mirrored: the Fabric Manager version gate and
+// partition-membership selection, both HGX-only. Re-implementing those here is
+// how the two copies drift, and neither can be exercised on PCIe hardware.
+func FreeGPUsNative(ctx context.Context, c client.Client, model string) (*Counts, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(SwiftGPUNodeGVK.GroupVersion().WithKind(SwiftGPUNodeGVK.Kind + "List"))
 	if err := c.List(ctx, list); err != nil {
@@ -151,6 +166,12 @@ func FreeGPUsNative(ctx context.Context, c client.Client) (*Counts, error) {
 	}
 
 	counts := &Counts{}
+	// Counted unfiltered, and it alone decides Known: "the ledger published
+	// something" is a different question from "something matches this pool".
+	// A cluster full of GPUs none of which match the model is KNOWN to have no
+	// usable device — that is the case the guard exists to catch — whereas a
+	// ledger that published nothing tells us nothing either way.
+	ledgerDevices := 0
 	for i := range list.Items {
 		node := &list.Items[i]
 		// vfioReady is per node here, not per device (it reports whether the
@@ -169,6 +190,13 @@ func FreeGPUsNative(ctx context.Context, c client.Client) (*Counts, error) {
 			if !ok {
 				continue
 			}
+			ledgerDevices++
+			if model != "" {
+				m, found, err := unstructured.NestedString(gpu, "model")
+				if err != nil || !found || !strings.Contains(m, model) {
+					continue
+				}
+			}
 			counts.Published++
 			if !vfio {
 				continue
@@ -184,6 +212,93 @@ func FreeGPUsNative(ctx context.Context, c client.Client) (*Counts, error) {
 	if counts.Free < 0 {
 		counts.Free = 0
 	}
-	counts.Known = counts.Published > 0
+	counts.Known = ledgerDevices > 0
 	return counts, nil
+}
+
+// SwiftGPUProfileGVK is the namespaced profile a Native pool's cells request
+// their GPU through.
+var SwiftGPUProfileGVK = schema.GroupVersionKind{
+	Group:   "gpu.kubeswift.io",
+	Version: "v1alpha1",
+	Kind:    "SwiftGPUProfile",
+}
+
+// NativeProfileModel reads spec.model off the SwiftGPUProfile a Native pool
+// points at. "" means the profile places no model constraint, which is also
+// what a profile that cannot be found resolves to.
+//
+// A missing profile is NOT an error here. The cell creation that follows will
+// fail on its own and say so; degrading this pre-flight to its previous
+// unfiltered behaviour is strictly better than turning a missing profile into
+// a stalled pool, because a filter that cannot be resolved must never be able
+// to manufacture a zero. Real API errors still propagate — the caller's
+// contract is that (nil, err) never means "full".
+func NativeProfileModel(ctx context.Context, c client.Client, namespace, name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
+	profile := &unstructured.Unstructured{}
+	profile.SetGroupVersionKind(SwiftGPUProfileGVK)
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, profile); err != nil {
+		if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting %s %s/%s: %w", SwiftGPUProfileGVK.Kind, namespace, name, err)
+	}
+	model, found, err := unstructured.NestedString(profile.Object, "spec", "model")
+	if err != nil || !found {
+		return "", nil
+	}
+	return model, nil
+}
+
+// DRARequestIsConstrained reports whether the pool's ResourceClaimTemplate (or
+// pre-created ResourceClaim) narrows which devices may satisfy it — a device
+// selector, or a device class that is not the whole driver's worth of devices.
+//
+// It exists so a constrained DRA pool can be reported UNKNOWN rather than
+// counted. Honouring a selector properly means evaluating CEL against device
+// attributes, which is the scheduler's job; a second, partial implementation
+// here would be wrong in a way nobody could see, and wrong in the direction
+// that over-counts — the exact failure this guards against.
+//
+// UNKNOWN costs nothing behaviourally: an over-counted DRA pool already passes
+// the guard, and an UNKNOWN one passes too. What changes is that the pool stops
+// publishing a free-GPU number that was never about this pool's devices.
+func DRARequestIsConstrained(ctx context.Context, c client.Client, namespace, templateName, claimName string) (bool, error) {
+	var requests []resourceapi.DeviceRequest
+	switch {
+	case templateName != "":
+		var tmpl resourceapi.ResourceClaimTemplate
+		if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: templateName}, &tmpl); err != nil {
+			if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("getting ResourceClaimTemplate %s/%s: %w", namespace, templateName, err)
+		}
+		requests = tmpl.Spec.Spec.Devices.Requests
+	case claimName != "":
+		var claim resourceapi.ResourceClaim
+		if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: claimName}, &claim); err != nil {
+			if meta.IsNoMatchError(err) || apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, fmt.Errorf("getting ResourceClaim %s/%s: %w", namespace, claimName, err)
+		}
+		requests = claim.Spec.Devices.Requests
+	default:
+		return false, nil
+	}
+	for i := range requests {
+		if e := requests[i].Exactly; e != nil && len(e.Selectors) > 0 {
+			return true, nil
+		}
+		for _, sub := range requests[i].FirstAvailable {
+			if len(sub.Selectors) > 0 {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
